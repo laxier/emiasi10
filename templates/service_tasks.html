@@ -5,18 +5,14 @@
   <h1 class="h4">Перенос услуг (LDP: кровь / ЭКГ / СМАД / Рентген)</h1>
   <form method="post" class="card mb-4 p-3">
     <div class="row g-2">
-      <div class="col-md-2">
-  <label class="form-label">Тип / Код (только услуги)</label>
+      <div class="col-md-3">
+        <label class="form-label">Код услуги (LDP)</label>
         <select name="service_type" class="form-select form-select-sm">
-          <option value="blood">Кровь (aliас)</option>
-          <option value="ecg">ЭКГ (alias)</option>
-          <option value="smad">СМАД (alias)</option>
-          <option value="xray">Рентген (alias)</option>
-          <option disabled>──────────</option>
           {% for s in ldp_specs %}
             <option value="{{ s.code }}">{{ s.code }} — {{ s.name }}</option>
           {% endfor %}
         </select>
+        <div class="form-text small">Referral авто: strict=да, always=нет, fallback=по чекбоксу.</div>
       </div>
       <div class="col-md-4">
         <label class="form-label">LPU содержит</label>

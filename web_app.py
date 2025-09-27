@@ -1018,9 +1018,24 @@ def service_tasks():
                         task.active = not task.active
                         log_user_action(sess, user_id, 'service_task_toggle', f'task={task.id} now={task.active}', source='web', status='info')
                     else:
-                        task.service_type = request.form.get('service_type', task.service_type)
+                        new_type = request.form.get('service_type', task.service_type)
+                        task.service_type = new_type
                         task.lpu_substring = request.form.get('lpu_substring', task.lpu_substring)
-                        task.referral_required = bool(request.form.get('referral_required'))
+                        # Авто-определение referral_required по политике специальности, если выбран код
+                        ref_flag_form = bool(request.form.get('referral_required'))
+                        if new_type and new_type.isdigit():
+                            spec_obj = sess.query(Specialty).filter_by(code=new_type).first()
+                            if spec_obj:
+                                if spec_obj.referral_policy == 0:  # strict
+                                    task.referral_required = True
+                                elif spec_obj.referral_policy == 2:  # always allow
+                                    task.referral_required = False
+                                else:  # fallback – пользовательский чекбокс
+                                    task.referral_required = ref_flag_form
+                            else:
+                                task.referral_required = ref_flag_form
+                        else:
+                            task.referral_required = ref_flag_form
                         task.allowed_windows = _parse_time_windows(request.form.get('allowed_windows'))
                         task.forbidden_windows = _parse_time_windows(request.form.get('forbidden_windows'))
                         log_user_action(sess, user_id, 'service_task_update', f'task={task.id}', source='web', status='success')
@@ -1030,11 +1045,21 @@ def service_tasks():
                 service_type = request.form.get('service_type') or 'blood'
                 lpu_sub = request.form.get('lpu_substring') or ''
                 if lpu_sub:
+                    # Определяем referral_required с учётом политики
+                    ref_flag_form = bool(request.form.get('referral_required'))
+                    ref_required = ref_flag_form
+                    if service_type.isdigit():
+                        spec_obj = sess.query(Specialty).filter_by(code=service_type).first()
+                        if spec_obj:
+                            if spec_obj.referral_policy == 0:
+                                ref_required = True
+                            elif spec_obj.referral_policy == 2:
+                                ref_required = False
                     task = ServiceShiftTask(
                         telegram_user_id=user_id,
                         service_type=service_type,
                         lpu_substring=lpu_sub,
-                        referral_required=bool(request.form.get('referral_required')),
+                        referral_required=ref_required,
                         allowed_windows=_parse_time_windows(request.form.get('allowed_windows')),
                         forbidden_windows=_parse_time_windows(request.form.get('forbidden_windows')),
                     )
