@@ -1,4 +1,5 @@
 from database import ServiceShiftTask
+from service_shift import process_service_shift_tasks
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BotCommand
@@ -3454,6 +3455,16 @@ def start_schedule_checker(interval_seconds: int = 60):
             logging.info("Schedule checker already running")
             return
         scheduler.add_job(check_schedule_updates, 'interval', seconds=interval_seconds, id='schedule_checker', max_instances=1)
+        # Периодическая обработка задач переноса услуг
+        if not scheduler.get_job('service_shift_tasks'):
+            def _run_tasks():
+                try:
+                    cnt = process_service_shift_tasks(max_tasks=15)
+                    if cnt:
+                        logging.info(f"Service shift tasks processed: {cnt}")
+                except Exception as e:
+                    logging.error(f"Service shift tasks error: {e}")
+            scheduler.add_job(_run_tasks, 'interval', seconds=90, id='service_shift_tasks', max_instances=1)
         scheduler.start()
         logging.info(f"Schedule checker started (interval={interval_seconds}s)")
     except Exception as e:

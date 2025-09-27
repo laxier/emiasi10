@@ -31,8 +31,8 @@ from typing import List, Optional, Tuple, Dict, Any
 import time
 import requests
 
-from emias_api import refresh_emias_token
-from database import get_db_session, get_tokens, get_profile
+from emias_api import refresh_emias_token, create_appointment
+from database import get_db_session, get_tokens, get_profile, ServiceShiftTask, log_user_action
 
 BASE_URL = "https://emias.info/api-eip/v3/saOrchestrator"
 URL_GET_LI = f"{BASE_URL}/getDoctorsInfoForLI"
@@ -239,3 +239,110 @@ __all__ = [
     "TimeWindow",
     "shift_service_appointment"
 ]
+
+
+# --------- Batch processing of ServiceShiftTask (create OR shift) ---------
+
+def _select_time_windows(raw: list[str] | None) -> list[TimeWindow]:
+    out = []
+    if not raw:
+        return out
+    for w in raw:
+        if '-' in w and len(w) >= 11:
+            a, b = w.split('-', 1)
+            try:
+                out.append(TimeWindow.parse(a.strip(), b.strip()))
+            except Exception:
+                continue
+    return out
+
+def process_service_shift_tasks(max_tasks: int = 10) -> int:
+    """Проходит по активным ServiceShiftTask и пытается перенести (если есть appointment_id)
+    или создать новую запись (если нет). Обновляет поля last_status / last_result.
+
+    Возвращает количество обработанных задач.
+    """
+    sess = get_db_session()
+    tasks = sess.query(ServiceShiftTask).filter_by(active=True).order_by(ServiceShiftTask.id.asc()).limit(max_tasks).all()
+    processed = 0
+    now = datetime.utcnow()
+    for task in tasks:
+        processed += 1
+        try:
+            allowed = _select_time_windows(task.allowed_windows)
+            forbidden = _select_time_windows(task.forbidden_windows)
+            token = _get_valid_token(task.telegram_user_id)
+            if not token:
+                task.last_status = 'no_token'
+                task.last_run_at = now
+                continue
+            profile = get_profile(sess, task.telegram_user_id)
+            if not profile:
+                task.last_status = 'no_profile'
+                task.last_run_at = now
+                continue
+            # appointmentId для LI, если нет – 0 (не критично для лабораторных)
+            try:
+                appt_for_li = int(task.appointment_id) if task.appointment_id else 0
+            except Exception:
+                appt_for_li = 0
+            try:
+                li = _fetch_li(task.telegram_user_id, token, appt_for_li, profile)
+            except Exception as e:
+                task.last_status = 'li_error'
+                task.last_result = str(e)[:250]
+                task.last_run_at = now
+                continue
+            best = None  # (ar, cr, cab, st, en, lpuName)
+            for lpu in li.get('doctorsInfo', []):
+                lpu_name = lpu.get('lpuShortName','')
+                if task.lpu_substring.lower() not in lpu_name.lower():
+                    continue
+                for ar in lpu.get('availableResources', []):
+                    ar_id = int(ar['id'])
+                    for comp in ar.get('complexResource', []):
+                        cr_id = int(comp['id'])
+                        sched = _fetch_sched(token, profile, appt_for_li, ar_id, cr_id)
+                        slot = _pick_earliest(sched, allowed, forbidden)
+                        if not slot:
+                            continue
+                        st, en = slot
+                        if best is None or st < best[3]:
+                            cab = comp.get('name') or comp.get('room', {}).get('number', '')
+                            best = (ar_id, cr_id, cab, st, en, lpu_name)
+            if not best:
+                task.last_status = 'no_slot'
+                task.last_run_at = now
+                continue
+            ar_id, cr_id, cab, st, en, lpu_name = best
+            action_kind = 'shift' if task.appointment_id else 'create'
+            try:
+                if task.appointment_id:
+                    # Перенос – receptionTypeId=0 (для процедур часто не обязателен)
+                    from emias_api import shift_appointment
+                    resp = shift_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), int(task.appointment_id), 0)
+                else:
+                    resp = create_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), 0)
+                if resp and (resp.get('appointmentId') or (resp.get('payload') and resp['payload'].get('appointmentId'))):
+                    appt_id = resp.get('appointmentId') or (resp.get('payload') and resp['payload'].get('appointmentId'))
+                    if appt_id:
+                        task.appointment_id = str(appt_id)
+                    task.last_status = 'ok'
+                    task.last_result = f"{action_kind} -> {st.isoformat()} cab={cab} lpu={lpu_name}"
+                    try:
+                        log_user_action(sess, task.telegram_user_id, f'service_task_{action_kind}', task.last_result, source='system', status='success')
+                    except Exception:
+                        pass
+                else:
+                    task.last_status = 'api_fail'
+                    task.last_result = str(resp)[:250]
+            except Exception as e:
+                task.last_status = 'exception'
+                task.last_result = str(e)[:250]
+            task.last_run_at = now
+        finally:
+            sess.commit()
+    sess.close()
+    return processed
+
+__all__ += ["process_service_shift_tasks"]
