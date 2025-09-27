@@ -32,7 +32,8 @@ import time
 import requests
 
 from emias_api import refresh_emias_token, create_appointment
-from database import get_db_session, get_tokens, get_profile, ServiceShiftTask, log_user_action
+from database import get_db_session, get_tokens, get_profile, ServiceShiftTask, log_user_action, Specialty, SERVICE_SPECIALITY_CODES
+from emias_api import get_assignments_referrals_info
 
 BASE_URL = "https://emias.info/api-eip/v3/saOrchestrator"
 URL_GET_LI = f"{BASE_URL}/getDoctorsInfoForLI"
@@ -256,6 +257,18 @@ def _select_time_windows(raw: list[str] | None) -> list[TimeWindow]:
                 continue
     return out
 
+from aiogram import Bot as _BotForNotify
+from config import TELEGRAM_BOT_TOKEN as _BOT_TOKEN
+_notify_bot: _BotForNotify | None = None
+
+async def _ensure_bot():
+    global _notify_bot
+    if _notify_bot is None:
+        try:
+            _notify_bot = _BotForNotify(token=_BOT_TOKEN)
+        except Exception:
+            _notify_bot = None
+
 def process_service_shift_tasks(max_tasks: int = 10) -> int:
     """Проходит по активным ServiceShiftTask и пытается перенести (если есть appointment_id)
     или создать новую запись (если нет). Обновляет поля last_status / last_result.
@@ -266,6 +279,8 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
     tasks = sess.query(ServiceShiftTask).filter_by(active=True).order_by(ServiceShiftTask.id.asc()).limit(max_tasks).all()
     processed = 0
     now = datetime.utcnow()
+    # Предзагрузка направлений кэшом: user_id -> list(referrals)
+    referral_cache: dict[int, list[dict]] = {}
     for task in tasks:
         processed += 1
         try:
@@ -286,6 +301,37 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
                 appt_for_li = int(task.appointment_id) if task.appointment_id else 0
             except Exception:
                 appt_for_li = 0
+            # Валидация направления если требуется
+            spec_code = None
+            # Предустановленные алиасы
+            if task.service_type in ('ecg','экг'):
+                spec_code = '600020'
+            elif task.service_type in ('smad','смад'):
+                spec_code = '600034'
+            elif task.service_type in ('xray','рентген'):
+                spec_code = '599621'
+            # Если в поле лежит непосредственно код специальности (цифровой) – используем его напрямую
+            elif isinstance(task.service_type, str) and task.service_type.isdigit():
+                spec_code = task.service_type
+            # Политика из Specialty (если есть) может форсить направление
+            needs_ref = task.referral_required
+            if spec_code:
+                spec_obj = sess.query(Specialty).filter_by(code=spec_code).first()
+                if spec_obj and spec_obj.referral_policy == 0:
+                    needs_ref = True
+            if needs_ref and spec_code:
+                if task.telegram_user_id not in referral_cache:
+                    try:
+                        referral_cache[task.telegram_user_id] = get_assignments_referrals_info(task.telegram_user_id).get('payload', {}).get('assignments', [])
+                    except Exception:
+                        referral_cache[task.telegram_user_id] = []
+                refs = referral_cache[task.telegram_user_id]
+                has_ref = any(str(r.get('speciality',{}).get('code')) == spec_code for r in refs)
+                if not has_ref:
+                    task.last_status = 'need_referral'
+                    task.last_result = f'Нет направления для {spec_code}'
+                    task.last_run_at = now
+                    continue
             try:
                 li = _fetch_li(task.telegram_user_id, token, appt_for_li, profile)
             except Exception as e:
@@ -331,6 +377,20 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
                     task.last_result = f"{action_kind} -> {st.isoformat()} cab={cab} lpu={lpu_name}"
                     try:
                         log_user_action(sess, task.telegram_user_id, f'service_task_{action_kind}', task.last_result, source='system', status='success')
+                    except Exception:
+                        pass
+                    # Отправим уведомление в бот (best-effort, без await если отсутствует цикл)
+                    try:
+                        import asyncio
+                        loop = asyncio.get_event_loop()
+                        async def _notify():
+                            await _ensure_bot()
+                            if _notify_bot:
+                                await _notify_bot.send_message(task.telegram_user_id, f"✅ Услуга {task.service_type}: {task.last_result}")
+                        if loop.is_running():
+                            loop.create_task(_notify())
+                        else:
+                            loop.run_until_complete(_notify())
                     except Exception:
                         pass
                 else:

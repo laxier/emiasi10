@@ -1026,6 +1026,7 @@ def service_tasks():
                         log_user_action(sess, user_id, 'service_task_update', f'task={task.id}', source='web', status='success')
                     sess.commit()
             else:  # create
+                # service_type может быть алиасом ('blood','ecg') либо напрямую кодом специальности (напр. 600020)
                 service_type = request.form.get('service_type') or 'blood'
                 lpu_sub = request.form.get('lpu_substring') or ''
                 if lpu_sub:
@@ -1041,9 +1042,11 @@ def service_tasks():
                     sess.commit()
                     log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')
         tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
+        # Предлагаем список LDP специальностей для выбора как service_type (код)
+        ldp_specs = sess.query(Specialty).order_by(Specialty.code.asc()).all()
     finally:
         sess.close()
-    return render_template('service_tasks.html', tasks=tasks)
+    return render_template('service_tasks.html', tasks=tasks, ldp_specs=ldp_specs)
 
 @app.route('/user/service_tasks/delete/<int:task_id>', methods=['POST'])
 def delete_service_task(task_id):
