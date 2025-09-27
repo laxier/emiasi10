@@ -176,6 +176,30 @@ class UserLog(Base):
         return f"<UserDoctorLink(telegram_user_id={self.telegram_user_id}, doctor_speciality={self.doctor_speciality}, appointment_id={self.appointment_id})>"
 
 
+class ServiceShiftTask(Base):
+    """Задача переноса записи на услугу (анализ крови, ЭКГ и т.п.) по адресу ЛПУ.
+
+    Хранит правила поиска слотов по LPU (substring по lpuShortName), а также временные окна.
+    """
+    __tablename__ = 'service_shift_tasks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id = Column(Integer, index=True, nullable=False)
+    service_type = Column(String, nullable=False)          # 'blood' | 'ecg' | custom
+    lpu_substring = Column(String, nullable=False)         # Часть названия ЛПУ для фильтра
+    appointment_id = Column(String, nullable=True)         # Текущий appointmentId (если уже есть)
+    referral_required = Column(Boolean, default=True)      # Требуется ли направление
+    allowed_windows = Column(JSON, nullable=True)          # ['HH:MM-HH:MM', ...]
+    forbidden_windows = Column(JSON, nullable=True)        # ['HH:MM-HH:MM', ...]
+    active = Column(Boolean, default=True)
+    last_status = Column(String, nullable=True)
+    last_result = Column(String, nullable=True)            # Текст/JSON итог
+    last_run_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<ServiceShiftTask(id={self.id}, user={self.telegram_user_id}, type={self.service_type}, lpu='{self.lpu_substring}')>"
+
+
 def is_tracking_doctor(session, user_id: int, doctor_api_id: str) -> bool:
     """ Проверяет, отслеживает ли пользователь данного врача. """
     return session.query(UserTrackedDoctor).filter_by(

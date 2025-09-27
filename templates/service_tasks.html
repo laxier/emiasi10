@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}Задачи переноса услуг{% endblock %}
+{% block content %}
+<div class="container mt-4">
+  <h1 class="h4">Перенос услуг (кровь / ЭКГ)</h1>
+  <form method="post" class="card mb-4 p-3">
+    <div class="row g-2">
+      <div class="col-md-2">
+        <label class="form-label">Тип</label>
+        <select name="service_type" class="form-select form-select-sm">
+          <option value="blood">Кровь</option>
+          <option value="ecg">ЭКГ</option>
+          <option value="other">Другое</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">LPU содержит</label>
+        <input name="lpu_substring" class="form-control form-control-sm" placeholder="ГП 62 Ф 1" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Разрешённые окна (через запятую)</label>
+        <input name="allowed_windows" class="form-control form-control-sm" placeholder="10:00-12:00, 15:00-16:00">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Запрещённые окна</label>
+        <input name="forbidden_windows" class="form-control form-control-sm" placeholder="11:00-11:30">
+      </div>
+      <div class="col-md-2 mt-2">
+        <div class="form-check mt-4">
+          <input class="form-check-input" type="checkbox" name="referral_required" checked id="ref_req">
+          <label class="form-check-label" for="ref_req">Требует направление</label>
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm mt-3">Создать задачу</button>
+  </form>
+
+  {% if tasks %}
+  <div class="table-responsive">
+    <table class="table table-sm table-striped align-middle">
+      <thead>
+        <tr>
+          <th>ID</th><th>Тип</th><th>LPU фильтр</th><th>Окна</th><th>Статус</th><th>Активна</th><th>Последний результат</th><th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tasks %}
+          <tr>
+            <td>{{ t.id }}</td>
+            <td>{{ t.service_type }}</td>
+            <td>{{ t.lpu_substring }}</td>
+            <td>
+              {% if t.allowed_windows %}<div><small class="text-success">{{ t.allowed_windows|join(', ') }}</small></div>{% endif %}
+              {% if t.forbidden_windows %}<div><small class="text-danger">! {{ t.forbidden_windows|join(', ') }}</small></div>{% endif %}
+            </td>
+            <td>{{ t.last_status or '-' }}</td>
+            <td>
+              <form method="post" action="{{ url_for('service_tasks') }}" style="display:inline;">
+                <input type="hidden" name="task_id" value="{{ t.id }}">
+                <button name="toggle" class="btn btn-sm {{ 'btn-success' if t.active else 'btn-outline-secondary' }}">{{ 'ON' if t.active else 'OFF' }}</button>
+              </form>
+            </td>
+            <td><small style="white-space:pre-line;">{{ (t.last_result or '')[:120] }}</small></td>
+            <td>
+              <form method="post" action="{{ url_for('delete_service_task', task_id=t.id) }}" style="display:inline;" onsubmit="return confirm('Удалить задачу?');">
+                <button class="btn btn-sm btn-danger">✕</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>Нет задач. Создайте первую выше.</p>
+  {% endif %}
+</div>
+{% endblock %}

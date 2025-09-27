@@ -13,7 +13,8 @@ from database import (
     DoctorSchedule,
     save_tokens,
     Specialty,
-    UserDoctorLink
+    UserDoctorLink,
+    ServiceShiftTask
 )
 from emias_api import get_whoami, get_assignments_referrals_info, get_available_resource_schedule_info
 import json, datetime as dt
@@ -99,6 +100,7 @@ def user_dashboard():
     session_db = get_db_session()
     tokens = session_db.query(UserToken).filter_by(telegram_user_id=user_id).first()
     tracked = session_db.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id).all()
+    shift_tasks = session_db.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).all()
     favorites = session_db.query(UserFavoriteDoctor).filter_by(telegram_user_id=user_id).all()
     
     # Получить информацию о врачах
@@ -126,7 +128,7 @@ def user_dashboard():
             last_token_update = tokens.expires_at - dt.timedelta(seconds=3600)
         except Exception:
             pass
-    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update)
+    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update, shift_tasks=shift_tasks)
 
 @app.route('/user/update_tokens', methods=['POST'])
 def user_update_tokens():
@@ -956,6 +958,81 @@ def add_track():
     # No coverage on add page (rules not yet persisted) – could compute later if needed
     session_db.close()
     return render_template('add_track.html', doctors=doctors, schedule_days=schedule_days, preview_doctor_id=preview_doctor_id, sched=sched)
+
+
+# --- Service Shift Tasks (Blood / ECG) ---
+
+def _parse_time_windows(raw: str):
+    windows = []
+    for part in (raw or '').split(','):
+        part = part.strip()
+        if not part or '-' not in part:
+            continue
+        a, b = part.split('-', 1)
+        a = a.strip()
+        b = b.strip()
+        if len(a) == 5 and len(b) == 5:
+            windows.append(f"{a}-{b}")
+    return windows
+
+@app.route('/user/service_tasks', methods=['GET','POST'])
+def service_tasks():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    user_id = session['user_id']
+    sess = get_db_session()
+    try:
+        if request.method == 'POST':
+            task_id = request.form.get('task_id')
+            if task_id:  # update / toggle
+                task = sess.query(ServiceShiftTask).filter_by(id=task_id, telegram_user_id=user_id).first()
+                if task:
+                    if 'toggle' in request.form:
+                        task.active = not task.active
+                        log_user_action(sess, user_id, 'service_task_toggle', f'task={task.id} now={task.active}', source='web', status='info')
+                    else:
+                        task.service_type = request.form.get('service_type', task.service_type)
+                        task.lpu_substring = request.form.get('lpu_substring', task.lpu_substring)
+                        task.referral_required = bool(request.form.get('referral_required'))
+                        task.allowed_windows = _parse_time_windows(request.form.get('allowed_windows'))
+                        task.forbidden_windows = _parse_time_windows(request.form.get('forbidden_windows'))
+                        log_user_action(sess, user_id, 'service_task_update', f'task={task.id}', source='web', status='success')
+                    sess.commit()
+            else:  # create
+                service_type = request.form.get('service_type') or 'blood'
+                lpu_sub = request.form.get('lpu_substring') or ''
+                if lpu_sub:
+                    task = ServiceShiftTask(
+                        telegram_user_id=user_id,
+                        service_type=service_type,
+                        lpu_substring=lpu_sub,
+                        referral_required=bool(request.form.get('referral_required')),
+                        allowed_windows=_parse_time_windows(request.form.get('allowed_windows')),
+                        forbidden_windows=_parse_time_windows(request.form.get('forbidden_windows')),
+                    )
+                    sess.add(task)
+                    sess.commit()
+                    log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')
+        tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
+    finally:
+        sess.close()
+    return render_template('service_tasks.html', tasks=tasks)
+
+@app.route('/user/service_tasks/delete/<int:task_id>', methods=['POST'])
+def delete_service_task(task_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    user_id = session['user_id']
+    sess = get_db_session()
+    try:
+        task = sess.query(ServiceShiftTask).filter_by(id=task_id, telegram_user_id=user_id).first()
+        if task:
+            log_user_action(sess, user_id, 'service_task_delete', f'task={task.id}', source='web', status='warning')
+            sess.delete(task)
+            sess.commit()
+    finally:
+        sess.close()
+    return redirect(url_for('service_tasks'))
 
 @app.route('/user/logs')
 def user_logs():
