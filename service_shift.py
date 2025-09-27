@@ -325,11 +325,37 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
             if needs_ref and spec_code:
                 if task.telegram_user_id not in referral_cache:
                     try:
-                        referral_cache[task.telegram_user_id] = get_assignments_referrals_info(task.telegram_user_id).get('payload', {}).get('assignments', [])
-                    except Exception:
+                        raw_payload = get_assignments_referrals_info(task.telegram_user_id)  # уже payload из emias_api
+                        ar_info = (raw_payload or {}).get('arInfo', {})
+                        # Основной список направлений
+                        ref_items = ar_info.get('referrals', {}).get('items', []) or []
+                        referral_cache[task.telegram_user_id] = ref_items
+                    except Exception as _ref_e:
                         referral_cache[task.telegram_user_id] = []
                 refs = referral_cache[task.telegram_user_id]
-                has_ref = any(str(r.get('speciality',{}).get('code')) == spec_code for r in refs)
+                has_ref = False
+                from database import SERVICE_SPECIALITY_CODES as _SVC_CODES
+                import datetime as _dt
+                today_iso = _dt.date.today().isoformat()
+                for r in refs:
+                    try:
+                        r_type = r.get('type')
+                        st = r.get('startTime')
+                        en = r.get('endTime')
+                        if st and en and not (st <= today_iso <= en):
+                            continue
+                        # Для услуг (LDP) используем REF_TO_LDP как валидное направление независимо от ldpTypeId.
+                        if spec_code in _SVC_CODES and r_type == 'REF_TO_LDP':
+                            has_ref = True
+                            break
+                        # Для некоторых случаев может быть specialityId/Code внутри (REF_TO_DOCTOR / иное)
+                        spec_obj = r.get('speciality') or {}
+                        spec_id_any = spec_obj.get('code') or r.get('specialityId') or r.get('specialityCode')
+                        if spec_id_any and str(spec_id_any) == str(spec_code):
+                            has_ref = True
+                            break
+                    except Exception:
+                        continue
                 if not has_ref:
                     task.last_status = 'need_referral'
                     task.last_result = f'Нет направления для {spec_code}'
