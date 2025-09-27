@@ -356,7 +356,7 @@ ADMIN_MODELS = {
     },
     'link': {
         'model': UserDoctorLink,
-        'title': 'Связки пользователь-специальность',
+        'title': 'Связки пользователь → спец/услуга',
         'editable': ['appointment_id','referral_id'],
         'create': False,
         'delete': True,
