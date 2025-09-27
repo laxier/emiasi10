@@ -477,10 +477,18 @@ def get_available_resource_schedule_info(
         "birthDate": profile.birth_date,
         "availableResourceId": available_resource_id,
         "complexResourceId": complex_resource_id,
-    **({"appointmentId": int(appointment_id) if isinstance(appointment_id, str) else appointment_id} if appointment_id else {
-        "inquiryPurposeId": inquiry_purpose_id
-    })
-}
+    }
+    if appointment_id:
+        # Конвертируем при необходимости
+        if isinstance(appointment_id, str):
+            try:
+                payload["appointmentId"] = int(appointment_id)
+            except Exception:
+                payload["appointmentId"] = appointment_id
+        else:
+            payload["appointmentId"] = appointment_id
+    else:
+        payload["inquiryPurposeId"] = inquiry_purpose_id
     response = emias_post_request(user_id, url, payload)
 
     # Автосохранение расписания в doctor_schedules при любом успешном ответе с scheduleOfDay
