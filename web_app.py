@@ -1113,7 +1113,25 @@ def service_tasks():
                     sess.add(task)
                     sess.commit()
                     log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')
-        tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
+        from sqlalchemy.exc import OperationalError
+        try:
+            tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
+        except OperationalError as e:
+            if 'service_rules' in str(e):
+                # Пытаемся мигрировать схему и повторить
+                try:
+                    from database import ensure_service_shift_schema
+                    ensure_service_shift_schema()
+                except Exception:
+                    pass
+                sess.rollback()
+                try:
+                    tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
+                except Exception as e2:
+                    tasks = []
+                    print(f"[service_tasks] retry after migrate failed: {e2}")
+            else:
+                raise
         # Предлагаем список LDP специальностей для выбора как service_type (код)
         from database import SERVICE_SPECIALITY_CODES as _SVC_CODES
         ldp_specs = (

@@ -384,6 +384,33 @@ def _auto_migrate():
     _ensure_column('service_shift_tasks', 'mode', 'VARCHAR(16)')
     _ensure_column('service_shift_tasks', 'service_rules', 'TEXT')
 
+def ensure_service_shift_schema() -> bool:
+    """Публичная попытка убедиться, что все нужные колонки service_shift_tasks есть.
+    Возвращает True если колонка service_rules обнаружена (или успешно добавлена).
+    """
+    try:
+        _auto_migrate()
+    except Exception:
+        pass
+    # Проверяем наличие service_rules
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(service_shift_tasks)")
+        cols = [r[1] for r in cur.fetchall()]
+        conn.close()
+        if 'service_rules' in cols:
+            return True
+    except Exception:
+        return False
+    # В крайнем случае повторим ещё раз
+    try:
+        _auto_migrate()
+    except Exception:
+        pass
+    return False
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _auto_migrate()
