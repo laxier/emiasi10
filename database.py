@@ -369,6 +369,13 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _auto_migrate()
 
+# Гарантируем, что даже если init_db не вызван (например, прямой импорт web слоя),
+# миграция всё равно попробует выполниться один раз.
+try:
+    _auto_migrate()
+except Exception as _e:
+    print(f"[MIGRATION][WARN] auto_migrate on import failed: {_e}")
+
 
 def get_db_session():
     return SessionLocal()
