@@ -333,8 +333,41 @@ def add_tracking_doctor(session, user_id: int, doctor_api_id: str):
     tracking = UserTrackedDoctor(telegram_user_id=user_id, doctor_api_id=doctor_api_id)
     session.add(tracking)
 
+def _column_exists(table: str, column: str) -> bool:
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [r[1] for r in cur.fetchall()]
+        conn.close()
+        return column in cols
+    except Exception:
+        return False
+
+def _ensure_column(table: str, column: str, ddl: str):
+    if _column_exists(table, column):
+        return
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        conn.commit()
+        conn.close()
+        print(f"[MIGRATION] Added column {column} to {table}")
+    except Exception as e:
+        print(f"[MIGRATION][WARN] Cannot add column {column} to {table}: {e}")
+
+def _auto_migrate():
+    # service_shift_tasks new columns
+    _ensure_column('service_shift_tasks', 'week_days', 'TEXT')      # stored JSON string by SQLAlchemy
+    _ensure_column('service_shift_tasks', 'exact_dates', 'TEXT')
+    _ensure_column('service_shift_tasks', 'mode', 'VARCHAR(16)')
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _auto_migrate()
 
 
 def get_db_session():
