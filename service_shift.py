@@ -371,6 +371,37 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
                                     # exact dates filter
                                     if task.exact_dates and st.date().isoformat() not in task.exact_dates:
                                         continue
+                                    # service_rules filtering (reuse subset of doctor logic): each rule is dict {type,value,timeRanges}
+                                    if task.service_rules:
+                                        def slot_matches_rules():
+                                            day_iso = st.date().isoformat()
+                                            wd_idx = st.weekday()
+                                            wd_map = ['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье']
+                                            wd_ru = wd_map[wd_idx]
+                                            t_part = st.strftime('%H:%M')
+                                            for rule in task.service_rules:
+                                                try:
+                                                    r_type = rule.get('type')
+                                                    val = rule.get('value')
+                                                    trs = rule.get('timeRanges') or []
+                                                except AttributeError:
+                                                    continue
+                                                match_day = False
+                                                if r_type == 'weekday' and val == wd_ru:
+                                                    match_day = True
+                                                elif r_type == 'date' and val == day_iso:
+                                                    match_day = True
+                                                if match_day:
+                                                    if not trs:
+                                                        return True
+                                                    for tr in trs:
+                                                        if '-' in tr:
+                                                            rs,re = tr.split('-',1)
+                                                            if rs <= t_part < re:
+                                                                return True
+                                            return False
+                                        if not slot_matches_rules():
+                                            continue
                                     if not _time_in_allowed(st, en, allowed, forbidden):
                                         continue
                                     if best is None or st < best[3]:

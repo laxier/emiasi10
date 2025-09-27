@@ -200,6 +200,7 @@ class ServiceShiftTask(Base):
     week_days = Column(JSON, nullable=True)                # Список номеров дней недели [0..6] (UTC локальная логика)
     exact_dates = Column(JSON, nullable=True)              # Список дат 'YYYY-MM-DD'
     mode = Column(String, nullable=True, default='shift')  # 'shift' | 'create' | 'auto'
+    service_rules = Column(JSON, nullable=True)            # Правила как у doctor tracking (массив dict)
 
     def __repr__(self):
         return f"<ServiceShiftTask(id={self.id}, user={self.telegram_user_id}, type={self.service_type}, mode={self.mode}, lpu='{self.lpu_substring}')>"
@@ -381,6 +382,7 @@ def _auto_migrate():
     _ensure_column('service_shift_tasks', 'week_days', 'TEXT')      # stored JSON string by SQLAlchemy
     _ensure_column('service_shift_tasks', 'exact_dates', 'TEXT')
     _ensure_column('service_shift_tasks', 'mode', 'VARCHAR(16)')
+    _ensure_column('service_shift_tasks', 'service_rules', 'TEXT')
 
 def init_db():
     Base.metadata.create_all(bind=engine)

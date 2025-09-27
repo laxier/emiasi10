@@ -1021,6 +1021,18 @@ def service_tasks():
                         new_type = request.form.get('service_type', task.service_type)
                         task.service_type = new_type
                         task.lpu_substring = request.form.get('lpu_substring', task.lpu_substring)
+                        # Обновление правил (если переданы)
+                        if 'service_rules' in request.form:
+                            raw_rules_str = request.form.get('service_rules','').strip()
+                            if raw_rules_str:
+                                try:
+                                    from rules_parser import parse_user_tracking_input
+                                    parsed_rules = parse_user_tracking_input(raw_rules_str)
+                                    task.service_rules = parsed_rules or None
+                                except Exception as e:
+                                    print(f"[service_tasks] rules parse error: {e}")
+                            else:
+                                task.service_rules = None
                         # Авто-определение referral_required по политике специальности, если выбран код
                         ref_flag_form = bool(request.form.get('referral_required'))
                         if new_type and new_type.isdigit():
@@ -1086,8 +1098,18 @@ def service_tasks():
                         forbidden_windows=_parse_time_windows(request.form.get('forbidden_windows')),
                         week_days=week_days,
                         exact_dates=dates or None,
-                        mode=request.form.get('mode','shift')
+                        mode=request.form.get('mode','shift'),
+                        service_rules=None
                     )
+                    # Первичное заполнение правил если переданы
+                    raw_rules_str = request.form.get('service_rules','').strip()
+                    if raw_rules_str:
+                        try:
+                            from rules_parser import parse_user_tracking_input
+                            parsed_rules = parse_user_tracking_input(raw_rules_str)
+                            task.service_rules = parsed_rules or None
+                        except Exception as e:
+                            print(f"[service_tasks] rules parse error (create): {e}")
                     sess.add(task)
                     sess.commit()
                     log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')

@@ -26,6 +26,11 @@
         <label class="form-label">Запрещённые окна</label>
         <input name="forbidden_windows" class="form-control form-control-sm" placeholder="11:00-11:30">
       </div>
+      <div class="col-md-4">
+        <label class="form-label">Правила (как у врачей)</label>
+        <input name="service_rules" class="form-control form-control-sm" placeholder="понедельник 10:00-12:00, 2025-10-01 09:00-11:00">
+        <div class="form-text small">Можно: понедельник 08:00-12:00, сегодня 10:00-14:00, 2025-10-01 09:00-11:00</div>
+      </div>
       <div class="col-md-3">
         <label class="form-label">Дни недели</label>
         <div class="d-flex flex-wrap gap-1 small">
@@ -65,7 +70,7 @@
     <table class="table table-sm table-striped align-middle">
       <thead>
         <tr>
-          <th>ID</th><th>Тип</th><th>Mode</th><th>LPU</th><th>Ограничения</th><th>Статус</th><th>ON</th><th>Результат</th><th>Действия</th>
+          <th>ID</th><th>Тип</th><th>Mode</th><th>LPU</th><th>Ограничения</th><th>Правила</th><th>Статус</th><th>ON</th><th>Результат</th><th>Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -82,6 +87,19 @@
                 <div><small class="text-primary">WD: {% for d in t.week_days %}{{ ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][d] }}{% if not loop.last %}/{% endif %}{% endfor %}</small></div>
               {% endif %}
               {% if t.exact_dates %}<div><small class="text-info">D: {{ t.exact_dates|join(',') }}</small></div>{% endif %}
+            </td>
+            <td>
+              {% if t.service_rules %}
+                <small>
+                  {% for r in t.service_rules %}
+                    {% if r.type %}
+                      {{ r.value }}{% if r.timeRanges %}:{% for tr in r.timeRanges %} {{ tr }}{% if not loop.last %};{% endif %}{% endfor %}{% endif %}
+                    {% else %}
+                      {{ r }}
+                    {% endif %}{% if not loop.last %}<br>{% endif %}
+                  {% endfor %}
+                </small>
+              {% else %}-{% endif %}
             </td>
             <td>{{ t.last_status or '-' }}</td>
             <td>
