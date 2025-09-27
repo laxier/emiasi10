@@ -12,29 +12,6 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)  # на всякий случ�
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-# --- Runtime lightweight migrations / compatibility fixes ---
-def ensure_schema():
-    """Adds backward-compatible columns if the running code (or older deployed
-    services) still issue queries expecting them.
-
-    Currently handles:
-      - specialties.app_id (was removed from the declarative model, but some
-        deployed processes / old images may still select it). We add it if
-        missing so that mixed versions do not crash with
-        'no such column: specialties.app_id'.
-    """
-    try:
-        with engine.connect() as conn:
-            # Collect existing column names for specialties
-            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(specialties)"))}
-            if 'app_id' not in cols:
-                conn.execute(text("ALTER TABLE specialties ADD COLUMN app_id VARCHAR"))
-    except Exception as e:
-        # Non-fatal: just print; we don't want to break app start.
-        print(f"[ensure_schema] Warning: {e}")
-
-ensure_schema()
-
 SessionLocal = sessionmaker(bind=engine)
 
 Base = declarative_base()
@@ -424,13 +401,32 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
     # Ищем, существует ли уже запись с данным API-идентификатором
     doctor = session.query(DoctorInfo).filter_by(doctor_api_id=doctor_api_id).first()
     if doctor:
-        # Обновляем запись
-        doctor.name = name
+        # Обновляем запись с защитой от перезаписи информативного имени (например, 'СМАД 321')
+        def _should_update_name(old: str | None, new: str | None) -> bool:
+            if not new:
+                return False
+            if not old:
+                return True
+            import re
+            old_up = old.upper()
+            new_up = new.upper()
+            # Если старое имя содержит 'СМАД' или номер кабинета, а новое его не содержит — не трогаем
+            has_old_cab_digits = bool(re.search(r"\d+", old))
+            has_new_cab_digits = bool(re.search(r"\d+", new))
+            if ('СМАД' in old_up or 'СУТОЧ' in old_up) and not ('СМАД' in new_up or 'СУТОЧ' in new_up):
+                return False
+            if has_old_cab_digits and not has_new_cab_digits:
+                return False
+            # Если новое имя гораздо короче и выглядит как общее описание услуги, оставим старое
+            if len(new) < 8 and len(old) >= 8:
+                return False
+            return True
+        if _should_update_name(doctor.name, name):
+            doctor.name = name
         if complex_resource_id is not None:
             doctor.complex_resource_id = complex_resource_id
         doctor.ar_speciality_id = ar_speciality_id
         doctor.ar_speciality_name = ar_speciality_name
-        # print(f"Updated doctor {doctor_api_id}")
     else:
         # Создаем новую запись
         doctor = DoctorInfo(
