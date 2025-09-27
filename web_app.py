@@ -1102,7 +1102,9 @@ def service_tasks():
         )
     finally:
         sess.close()
-    return render_template('service_tasks.html', tasks=tasks, ldp_specs=ldp_specs)
+    # Подготовим словарь политик направления для фронта: code -> referral_policy
+    spec_policies = {s.code: (s.referral_policy if s.referral_policy is not None else 1) for s in ldp_specs}
+    return render_template('service_tasks.html', tasks=tasks, ldp_specs=ldp_specs, spec_policies=spec_policies)
 
 @app.route('/user/service_tasks/delete/<int:task_id>', methods=['POST'])
 def delete_service_task(task_id):

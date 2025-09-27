@@ -64,7 +64,8 @@ class Specialty(Base):
     appointment_duration = Column(Integer, nullable=True)  # в минутах, например
     reception_type_id = Column(Integer, nullable=True)
     # Новая унифицированная политика направления: 0=strict,1=fallback,2=always_allow
-    referral_policy = Column(Integer, default=1)
+    # По требованию: для LDP по умолчанию всегда требуется направление, поэтому глобальный default ставим 0
+    referral_policy = Column(Integer, default=0)
     # requires_referral устарел и удалён через миграцию
 
 
@@ -236,6 +237,22 @@ SERVICE_SPECIALITY_CODES = {
     '599621',  # Рентгенография (пример)
 }
 
+def enforce_strict_referral_for_service_codes():
+    """Проставляет referral_policy=0 (strict) для всех кодов услуг в SERVICE_SPECIALITY_CODES.
+    Вызывается при импорте для выравнивания старых данных с новым требованием.
+    """
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        qmarks = ','.join(['?'] * len(SERVICE_SPECIALITY_CODES))
+        cur.execute(f"UPDATE specialties SET referral_policy=0 WHERE code IN ({qmarks})", tuple(SERVICE_SPECIALITY_CODES))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def _should_update_service_name(old: str | None, new: str | None) -> bool:
     """Правило обновления имени для ServiceResource.
     Похож на докторский, но дополнительно защищаем 'КАБИНЕТ', 'СМАД', 'ЭКГ', номера.
@@ -368,11 +385,19 @@ def _auto_migrate():
 def init_db():
     Base.metadata.create_all(bind=engine)
     _auto_migrate()
+    try:
+        enforce_strict_referral_for_service_codes()
+    except Exception:
+        pass
 
 # Гарантируем, что даже если init_db не вызван (например, прямой импорт web слоя),
 # миграция всё равно попробует выполниться один раз.
 try:
     _auto_migrate()
+    try:
+        enforce_strict_referral_for_service_codes()
+    except Exception:
+        pass
 except Exception as _e:
     print(f"[MIGRATION][WARN] auto_migrate on import failed: {_e}")
 

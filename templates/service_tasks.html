@@ -3,16 +3,16 @@
 {% block content %}
 <div class="container mt-4">
   <h1 class="h4">Перенос услуг (LDP: кровь / ЭКГ / СМАД / Рентген)</h1>
-  <form method="post" class="card mb-4 p-3">
+  <form method="post" class="card mb-4 p-3" id="createTaskForm" data-spec-policies='{{ spec_policies|tojson|safe }}'>
     <div class="row g-2">
       <div class="col-md-3">
         <label class="form-label">Код услуги (LDP)</label>
-        <select name="service_type" class="form-select form-select-sm">
+        <select name="service_type" class="form-select form-select-sm" id="service_type_select">
           {% for s in ldp_specs %}
             <option value="{{ s.code }}">{{ s.code }} — {{ s.name }}</option>
           {% endfor %}
         </select>
-        <div class="form-text small">Referral авто: strict=да, always=нет, fallback=по чекбоксу.</div>
+        <div class="form-text small">Направление: strict = всегда требуется, always = не требуется, fallback = по чекбоксу ниже.</div>
       </div>
       <div class="col-md-2">
         <label class="form-label">LPU содержит</label>
@@ -50,8 +50,8 @@
           <option value="auto">Авто</option>
         </select>
       </div>
-      <div class="col-md-2 d-flex align-items-end">
-        <div class="form-check">
+      <div class="col-md-2 d-flex align-items-end" id="referral_wrapper">
+        <div class="form-check mb-0">
           <input class="form-check-input" type="checkbox" name="referral_required" checked id="ref_req">
           <label class="form-check-label" for="ref_req">Нужно направление</label>
         </div>
@@ -78,7 +78,9 @@
             <td>
               {% if t.allowed_windows %}<div><small class="text-success">{{ t.allowed_windows|join(', ') }}</small></div>{% endif %}
               {% if t.forbidden_windows %}<div><small class="text-danger">! {{ t.forbidden_windows|join(', ') }}</small></div>{% endif %}
-              {% if t.week_days %}<div><small class="text-primary">WD: {{ t.week_days|join('/') }}</small></div>{% endif %}
+              {% if t.week_days %}
+                <div><small class="text-primary">WD: {% for d in t.week_days %}{{ ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'][d] }}{% if not loop.last %}/{% endif %}{% endfor %}</small></div>
+              {% endif %}
               {% if t.exact_dates %}<div><small class="text-info">D: {{ t.exact_dates|join(',') }}</small></div>{% endif %}
             </td>
             <td>{{ t.last_status or '-' }}</td>
@@ -103,4 +105,38 @@
     <p>Нет задач. Создайте первую выше.</p>
   {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Карта политик направления: 0=strict (всегда нужно), 1=fallback (по чекбоксу), 2=always allow (не нужно)
+const SPEC_POLICIES = JSON.parse(document.getElementById('createTaskForm').dataset.specPolicies || '{}');
+const selectEl = document.getElementById('service_type_select');
+const refWrap = document.getElementById('referral_wrapper');
+const refChk = document.getElementById('ref_req');
+
+function applyReferralPolicy(){
+  const code = selectEl.value;
+  const policy = SPEC_POLICIES[code];
+  if (policy === 0){
+    // strict: всегда требуется, скрываем чекбокс и ставим checked
+    refChk.checked = true;
+    refWrap.style.visibility = 'hidden';
+    refWrap.style.position = 'relative';
+    refWrap.style.height = '0';
+  } else if (policy === 2){
+    // always allow: не требуется, скрываем блок, снимаем чек
+    refChk.checked = false;
+    refWrap.style.visibility = 'hidden';
+    refWrap.style.position = 'relative';
+    refWrap.style.height = '0';
+  } else {
+    // fallback: показываем чекбокс
+    refWrap.style.visibility = 'visible';
+    refWrap.style.height = '';
+  }
+}
+selectEl.addEventListener('change', applyReferralPolicy);
+applyReferralPolicy();
+</script>
 {% endblock %}
