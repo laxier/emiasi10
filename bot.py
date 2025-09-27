@@ -1,5 +1,3 @@
-from database import ServiceShiftTask
-from service_shift import process_service_shift_tasks
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, BotCommand
@@ -300,17 +298,10 @@ async def get_receptions_handler(message: Message) -> None:
             appt_id = appt.get("id", "unknown")
             # Если приём можно перенести, добавляем кнопку "Перенести"
             if appt.get("enableShift"):
-                if appt.get("typeLpu") == 'Кожно-венерологический диспансер':
-                    lpuId = appt.get("lpuId", "")
-                    buttons.append(InlineKeyboardButton(
-                        text="🔄 Перенести приём",
-                        callback_data=f"reschedule:{appt_id}:{lpuId}"
-                    ))
-                else:
-                    buttons.append(InlineKeyboardButton(
-                        text="🔄 Перенести приём",
-                        callback_data=f"reschedule:{appt_id}"
-                    ))
+                buttons.append(InlineKeyboardButton(
+                    text="🔄 Перенести приём",
+                    callback_data=f"reschedule:{appt_id}"
+                ))
 
             # Подготовка данных врача для сохранения/обновления
             doctor_api_id = appt.get("availableResourceId")
@@ -330,7 +321,7 @@ async def get_receptions_handler(message: Message) -> None:
                 if doctor_api_id:
                     doctor_data = {
                         "id": doctor_api_id,
-                        "name": appt.get("doctorName") or ldp_type_name or (f"LDP {ldp_type_id}" if ldp_type_id else "Диагностика"),
+                        "name": appt.get("doctorName") or appt.get("roomNumber") or ldp_type_name or (f"LDP {ldp_type_id}" if ldp_type_id else "Диагностика"),
                         # Явно заполняем arSpecialityId/Name значениями из ldpType, чтобы везде использовать один ключ
                         # (например, для связок UserDoctorLink, поиска расписания и т.п.)
                         "arSpecialityId": appt.get("arSpecialityId") or ldp_type_id,
@@ -383,7 +374,7 @@ async def process_reschedule(callback_query: CallbackQuery):
             lpu_id = None
         elif len(data_parts) == 3:
             appt_id = data_parts[1]
-            lpu_id = data_parts[2]
+            # lpu_id support removed
 
         user_id = callback_query.from_user.id  # ID пользователя Telegram
 
@@ -391,7 +382,7 @@ async def process_reschedule(callback_query: CallbackQuery):
             user_id=user_id,
             speciality_id=[""],
             appointment_id=appt_id,
-            lpu_id=lpu_id
+            # lpu_id removed
         ).get("payload")
 
         doctors_info = payload.get("doctorsInfo", [])
@@ -412,8 +403,7 @@ async def process_reschedule(callback_query: CallbackQuery):
         if doctors_info:
             await callback_query.message.answer("<b>Доступные врачи:</b>", parse_mode="HTML")
             for block in doctors_info:
-                lpu_name = block.get("lpuShortName", "Без названия")
-                await callback_query.message.answer(f"🏥 {lpu_name}", parse_mode="HTML")
+                # Removed LPU name output
                 resources = block.get("availableResources", [])
                 if not resources:
                     await callback_query.message.answer("   Нет доступных ресурсов.")
@@ -656,7 +646,7 @@ def format_referral(item: dict) -> str:
     """
     ref_type = item.get("type", "Неизвестно")
     number = item.get("number", "—")
-    lpu_name = item.get("lpuName", "—")
+    # lpu_name removed
     start_time = item.get("startTime", "—")
     end_time = item.get("endTime", "—")
     comment = item.get("comment", "—")
@@ -674,7 +664,7 @@ def format_referral(item: dict) -> str:
         service = "—"
 
     result = (
-        f"🏥 <b>{lpu_name}</b>\n"
+    ""
         f"🩺 Услуга: {service}\n"
         f"‍⚕️ {issued_doctor}\n"
         f"💬 Диагноз: {diagnosis}\n"
@@ -768,6 +758,68 @@ async def get_referrals_handler(message: Message) -> None:
     else:
         answer_text = "Ошибка при выполнении запроса к API getAssignmentsReferralsInfo."
     await message.answer(answer_text, parse_mode="HTML")
+
+
+# ---- LDP (диагностика) агрегатор по ЛПУ и адресам ----
+async def ldp_aggregate_handler(message: Message) -> None:
+    """Команда /ldp_agg
+    Собирает все текущие записи пользователя типа LDP и показывает агрегировано:
+    LPU -> адрес -> список услуг (ldpTypeName) и кабинеты.
+
+    Дополнительно подтягивает доступные (enableShift=false/true) различая их не нужно – просто отображаем.
+    Если у пользователя нет LDP записей – сообщаем.
+    """
+    data = get_appointment_receptions_by_patient(message.from_user.id)
+    if not data:
+        await message.answer("Не удалось получить приёмы.")
+        return
+    appts = data.get("appointment", []) or data.get("appointments", []) or []
+    ldp_list = [a for a in appts if a.get("type") == "LDP"]
+    if not ldp_list:
+        await message.answer("LDP (диагностических) записей не найдено.")
+        return
+    # Структура: {(lpuId, lpuName): {(addressString): [(service, room, start, end)]}}
+    aggregated = {}
+    for appt in ldp_list:
+        lpu_id = appt.get("lpuId") or appt.get("lpuID") or appt.get("idLpu")
+        lpu_name = appt.get("nameLpu") or appt.get("lpuShortName") or appt.get("lpuName") or "ЛПУ"
+        key_lpu = (lpu_id, lpu_name)
+        lpu_block = aggregated.setdefault(key_lpu, {})
+        # адрес может быть в lpuAddress либо в объекте location/address*
+        address = appt.get("lpuAddress") or appt.get("addressString") or appt.get("address") or "Адрес не указан"
+        addr_block = lpu_block.setdefault(address, [])
+        to_ldp = appt.get("toLdp", {}) or {}
+        service = to_ldp.get("ldpTypeName") or appt.get("ldpTypeName") or "Услуга"
+        room = appt.get("roomNumber") or appt.get("room") or "—"
+        start = appt.get("startTime", "")
+        end = appt.get("endTime", "")
+        # Человеко читаемо
+        try:
+            start_h = humanize_datetime(start)
+        except Exception:
+            start_h = start
+        try:
+            end_h = humanize_datetime(end)
+        except Exception:
+            end_h = end
+        addr_block.append((service, room, start_h, end_h))
+
+    # Формируем ответ
+    parts = ["<b>Ваши диагностические записи (LDP):</b>"]
+    for (lpu_id, lpu_name), addr_map in aggregated.items():
+        parts.append(f"\n🏥 <b>{safe_html(lpu_name)}</b> (ID: {lpu_id})")
+        for address, entries in addr_map.items():
+            parts.append(f"📍 {safe_html(address)}")
+            for service, room, start_h, end_h in sorted(entries, key=lambda x: x[2]):
+                parts.append(f" • {safe_html(service)} | Каб. {safe_html(room)} | {safe_html(start_h)}")
+    text = "\n".join(parts)
+    # Ограничим по 4000 символов
+    if len(text) > 4000:
+        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for i, ch in enumerate(chunks):
+            await message.answer(ch, parse_mode="HTML")
+    else:
+        await message.answer(text, parse_mode="HTML")
 
 
 # Обработчик команды /get_specialities – получение информации о специальностях
@@ -1475,10 +1527,7 @@ async def tracked_handler(message: Message):
         return
 
     doctor_ids = [t.doctor_api_id for t in tracked]
-    doctors = session.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(doctor_ids))
-    if SERVICE_SPECIALITY_CODES:
-        doctors = doctors.filter(~DoctorInfo.ar_speciality_id.in_(list(SERVICE_SPECIALITY_CODES)))
-    doctors = doctors.all()
+    doctors = session.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(doctor_ids)).all()
     track_by_id = {t.doctor_api_id: t for t in tracked}
     for doctor in doctors:
         tracking = track_by_id.get(doctor.doctor_api_id)
@@ -2072,14 +2121,8 @@ async def help_handler(message: Message) -> None:
         "/get_receptions — данные о приёмах\n"
         "/get_referrals — данные о направлениях\n"
         "/get_specialities — информация о специальностях\n"
-        "/get_doctors_info <spec> [lpu] — врачи по специальности (расширено)\n"
-        "/get_clinics — список ЛПУ\n"
         "/favourites — расписание любимых врачей\n"
-        "/tracked — список отслеживаемых врачей\n\n"
-        "Услуги (LDP):\n"
-        "/service_tasks — список и управление задачами услуг\n"
-        "/add_service_task SERVICE=<код> LPU=<фрагмент> [ALLOWED=HH:MM-HH:MM,...] [FORB=..] [REF=0|1] — создать задачу\n"
-        "/service_resources — список кабинетов/услуг\n\n"
+        "/tracked — список отслеживаемых врачей\n"
         "/set_password <пароль> — установить пароль для веб-доступа\n"
         "/get_password — показать текущий пароль\n"
         "/help — помощь"
@@ -2102,6 +2145,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(get_specialities_handler, Command("get_specialities"))
     dp.message.register(get_doctors_info_handler, Command("get_doctors_info"))
     dp.message.register(get_clinics_handler, Command("get_clinics"))
+    dp.message.register(ldp_aggregate_handler, Command("ldp_agg"))
     dp.message.register(favourites_handler, Command("favourites"))
     dp.message.register(set_password_handler, Command("set_password"))
     dp.message.register(get_password_handler, Command("get_password"))
@@ -2128,15 +2172,15 @@ def register_handlers(dp: Dispatcher) -> None:
 import asyncio
 from aiogram import Bot, Dispatcher
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from database import get_db_session, UserTrackedDoctor, DoctorInfo, DoctorSchedule, UserDoctorLink, SERVICE_SPECIALITY_CODES, ServiceResource, ServiceShiftTask
+from database import get_db_session, UserTrackedDoctor, DoctorInfo, DoctorSchedule, UserDoctorLink
 from emias_api import get_available_resource_schedule_info
 from aiogram.types import Message
 from config import TELEGRAM_BOT_TOKEN
 
+# Создаем бота и диспетчер
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
-# Глобальный экземпляр бота (используется во множестве хэндлеров)
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 import json
 
@@ -2188,6 +2232,48 @@ async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo):
         for link in all_links:
             if link.doctor_speciality not in existing_specs:
                 link.appointment_id = None
+        session.commit()
+
+    speciality_priorities = []
+    # logging.info(f"Получаем расписание для врача: {doctor.name} (ID: {doctor.doctor_api_id}), специальность: {doctor.ar_speciality_id}")
+    if doctor.ar_speciality_id in ["602", "69"]:
+        speciality_priorities.extend(["602", "69"])
+
+    # Добавляем основную специальность врача в список, если ее там еще нет
+    if doctor.ar_speciality_id not in speciality_priorities:
+        speciality_priorities.append(doctor.ar_speciality_id)
+
+    # logging.info(f"speciality_priorities: {speciality_priorities}")
+
+    # Проверяем, есть ли appointment_id из API для этого врача или эквивалентных специальностей
+    appointment_id = None
+    if appointments_data:
+        appointments = appointments_data.get("appointment", [])
+        for appt in appointments:
+            # Сначала проверяем, есть ли запись к этому конкретному врачу
+            if str(appt.get("availableResourceId", "")) == str(doctor.doctor_api_id):
+                appt_id = appt.get("appointmentId") or appt.get("id")
+                if appt_id:
+                    try:
+                        appointment_id = int(appt_id)
+                        print(f"Найден appointment_id {appointment_id} для врача {doctor.doctor_api_id}")
+                        break
+                    except (ValueError, TypeError):
+                        pass
+            # Если не нашли для этого врача, проверяем по специальности
+            if appointment_id is None:
+                appt_spec_id = extract_speciality_id_from_appointment(appt)
+                # print(f"Проверяем запись с specialityId: {appt_spec_id}, appointmentId: {appt.get('appointmentId') or appt.get('id')}")
+                if appt_spec_id in get_equivalent_speciality_codes(doctor.ar_speciality_id):
+                    appt_id = appt.get("appointmentId") or appt.get("id")
+                    if appt_id:
+                        try:
+                            appointment_id = int(appt_id)
+                            print(f"Найден appointment_id {appointment_id} по специальности {appt_spec_id}")
+                            break
+                        except (ValueError, TypeError):
+                            pass
+    
     logging.info(f"appointment_id found: {appointment_id}")
     print(f"Используем appointment_id: {appointment_id} для специальности {doctor.ar_speciality_id}")
     if appointment_id:
@@ -3422,16 +3508,6 @@ def start_schedule_checker(interval_seconds: int = 60):
             logging.info("Schedule checker already running")
             return
         scheduler.add_job(check_schedule_updates, 'interval', seconds=interval_seconds, id='schedule_checker', max_instances=1)
-        # Периодическая обработка задач переноса услуг
-        if not scheduler.get_job('service_shift_tasks'):
-            def _run_tasks():
-                try:
-                    cnt = process_service_shift_tasks(max_tasks=15)
-                    if cnt:
-                        logging.info(f"Service shift tasks processed: {cnt}")
-                except Exception as e:
-                    logging.error(f"Service shift tasks error: {e}")
-            scheduler.add_job(_run_tasks, 'interval', seconds=90, id='service_shift_tasks', max_instances=1)
         scheduler.start()
         logging.info(f"Schedule checker started (interval={interval_seconds}s)")
     except Exception as e:
@@ -3439,7 +3515,8 @@ def start_schedule_checker(interval_seconds: int = 60):
 
 
 async def main():
-    """Запускает бота и планировщик с корректным закрытием HTTP-сессии бота."""
+    """Запускает бота и планировщик"""
+    # Настройка логирования
     logging.basicConfig(
         filename='bot.log',
         level=logging.INFO,
@@ -3448,6 +3525,8 @@ async def main():
     )
     print("Запускаем бота... ✅")
     register_handlers(dp)
+
+    # Устанавливаем команды для меню
     commands = [
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="auth", description="Авторизация через токены"),
@@ -3462,100 +3541,8 @@ async def main():
         BotCommand(command="get_clinics", description="Получить клиники"),
         BotCommand(command="favourites", description="Избранное"),
         BotCommand(command="tracked", description="Отслеживаемые врачи"),
-        BotCommand(command="service_tasks", description="Задачи переноса услуг"),
     ]
     await bot.set_my_commands(commands)
-    await check_schedule_updates()
-    start_schedule_checker()
-    try:
-        await dp.start_polling(bot)
-    finally:
-        try:
-            await bot.session.close()
-            logging.info("Bot session closed")
-        except Exception as e:
-            logging.error(f"Error closing bot session: {e}")
-
-
-# ---------- Service Shift Tasks (Bot) / Service Resources ---------
-
-@dp.message(Command("service_resources"))
-async def service_resources_bot(message: Message):
-    sess = get_db_session()
-    resources = sess.query(ServiceResource).order_by(ServiceResource.speciality_id, ServiceResource.name).limit(50).all()
-    if not resources:
-        await message.answer("Нет сохранённых сервисных ресурсов. Они появятся после первичного получения данных из API.")
-        sess.close(); return
-    lines = ["Кабинеты / услуги (первые 50):"]
-    for r in resources:
-        lines.append(f"{r.resource_api_id} | {r.name} | {r.speciality_id}")
-    await message.answer("\n".join(lines)[:4000])
-    sess.close()
-
-@dp.message(Command("service_tasks"))
-async def service_tasks_bot(message: Message):
-    session = get_db_session()
-    tasks = session.query(ServiceShiftTask).filter_by(telegram_user_id=message.from_user.id).order_by(ServiceShiftTask.id.desc()).all()
-    if not tasks:
-        await message.answer("Задач переноса нет. Пример добавления:\n/add_service_task blood LPU=ГП 62 ALLOWED=10:00-12:00,15:00-16:00 FORB=13:00-14:00 REF=0")
-        session.close(); return
-    lines = ["Ваши задачи переноса:"]
-    for t in tasks[:25]:
-        lines.append(f"#{t.id} {t.service_type} LPU~{t.lpu_substring} {'ON' if t.active else 'OFF'} st={t.last_status or '-'} {t.last_result or ''}")
-    await message.answer("\n".join(lines)[:4000])
-    session.close()
-
-@dp.message(Command("add_service_task"))
-async def add_service_task_bot(message: Message):
-    text = message.text.strip()
-    if text == '/add_service_task':
-        await message.answer("Форматы:\n1) /add_service_task blood 'ГП 62' 10:00-12:00,15:00-16:00\n2) /add_service_task blood LPU=ГП 62 ALLOWED=10:00-12:00,15:00-16:00 FORB=13:00-14:00 REF=0")
-        return
-    parts = text.split()
-    if len(parts) >= 3 and '=' not in parts[2]:
-        service_type = parts[1].lower()
-        lpu_sub = parts[2].strip("'\"")
-        windows_raw = parts[3] if len(parts) >= 4 else ''
-        def _parse_simple(wraw):
-            out=[]
-            for p in wraw.split(','):
-                p=p.strip();
-                if '-' in p and len(p)>=11: out.append(p)
-            return out
-        sess = get_db_session()
-        task = ServiceShiftTask(telegram_user_id=message.from_user.id, service_type=service_type or 'blood', lpu_substring=lpu_sub, allowed_windows=_parse_simple(windows_raw) or None)
-        sess.add(task); sess.commit()
-        try: log_user_action(sess, message.from_user.id, 'service_task_create', f'task={task.id} type={service_type}', source='bot', status='success')
-        except Exception: pass
-        await message.answer(f"Создана задача #{task.id} для {service_type} LPU~{lpu_sub}")
-        sess.close(); return
-    # Новый формат с ключами
-    args={'SERVICE':'blood','LPU':'','ALLOWED':'','FORB':'','REF':'1'}
-    for token in parts[1:]:
-        if '=' in token:
-            k,v=token.split('=',1); args[k.upper()]=v
-    if not args['LPU']:
-        await message.answer('Нужно указать LPU=<подстрока>'); return
-    def _parse_list(raw):
-        out=[]
-        for p in raw.split(','):
-            p=p.strip();
-            if '-' in p and len(p)>=11: out.append(p)
-        return out
-    sess = get_db_session()
-    task = ServiceShiftTask(
-        telegram_user_id=message.from_user.id,
-        service_type=args['SERVICE'].lower(),
-        lpu_substring=args['LPU'],
-        allowed_windows=_parse_list(args['ALLOWED']) or None,
-        forbidden_windows=_parse_list(args['FORB']) or None,
-        referral_required=(args['REF']!='0')
-    )
-    sess.add(task); sess.commit()
-    try: log_user_action(sess, message.from_user.id, 'service_task_create', f'task={task.id} type={task.service_type}', source='bot', status='success')
-    except Exception: pass
-    await message.answer(f"Задача #{task.id} создана. Тип={task.service_type} LPU~{task.lpu_substring} REF={'yes' if task.referral_required else 'no'}")
-    sess.close()
 
     # Выполняем первую проверку расписания сразу при запуске
     await check_schedule_updates()

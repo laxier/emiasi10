@@ -12,16 +12,6 @@
 {% endblock %}
 
 {% block content %}
-    <div class="container mt-4">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category or 'info' }}">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
         <h1>Панель пользователя</h1>
         <p>Привет, пользователь {{ profile.telegram_user_id }}!</p>
         {% if profile %}
@@ -52,6 +42,7 @@
                 <h2 class="h5 mb-0">Токены</h2>
                 {% if token_status is defined and token_status %}
                     {% if token_status == 'expired' %}<span class="badge bg-danger">EXPIRED</span>
+                    {% elif token_status == 'error' %}<span class="badge bg-danger">ERROR</span>
                     {% elif token_status == 'soon' %}<span class="badge bg-warning text-dark">SOON</span>
                     {% else %}<span class="badge bg-success">OK</span>{% endif %}
                 {% endif %}
@@ -66,8 +57,26 @@
                                 <p class="text-muted small mb-1">Осталось ~ {{ (remaining_seconds // 60) if remaining_seconds>0 else 0 }} мин.</p>
                             {% endif %}
                             {% if last_token_update is defined and last_token_update %}
-                                <p class="text-muted small mb-2">Обновлён: {{ last_token_update.strftime('%Y-%m-%d %H:%M:%S') }} UTC</p>
+                                <p class="text-muted small mb-2">Обновлён: {{ last_token_update.strftime('%Y-%m-%d %H:%M:%S') }} МСК</p>
                             {% endif %}
+                            {% if token_error %}
+                                <div class="alert alert-danger py-1 px-2 small mt-2 mb-1">
+                                    <strong>Ошибка обновления:</strong><br/>
+                                    {{ token_error_details[:260] }}{% if token_error_details and token_error_details|length > 260 %}...{% endif %}
+                                    {% if 'invalid_grant' in token_error_details %}
+                                        <div class="mt-1">
+                                            <em>refresh_token устарел или недействителен.</em><br/>
+                                            Введите новый набор токенов в форме справа (access_token, refresh_token, expires_in) либо выполните повторную авторизацию в боте (/auth) и вставьте обновлённые значения.
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                            {% if show_refresh_attempt %}
+                                <p class="text-muted small mb-2">Последняя попытка refresh: {{ last_refresh_attempt.strftime('%Y-%m-%d %H:%M:%S') }} МСК</p>
+                            {% endif %}
+                            <form method="post" action="{{ url_for('manual_refresh_token') }}" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-outline-primary mt-1">Принудительно обновить сейчас</button>
+                            </form>
                         </div>
                         <div class="col-md-6">
                             <form method="post" action="{{ url_for('user_update_tokens') }}">
@@ -180,37 +189,4 @@
                 <a href="{{ url_for('add_favorite') }}" class="btn btn-primary">Добавить врача в избранное</a>
             </div>
         </div>
-        <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h2 class="h5 mb-0">Перенос услуг (кровь / ЭКГ)</h2>
-                <a href="{{ url_for('service_tasks') }}" class="btn btn-sm btn-outline-primary">Управление задачами</a>
-            </div>
-            <div class="card-body">
-                {% if shift_tasks %}
-                <div class="table-responsive">
-                    <table class="table table-sm">
-                        <thead><tr><th>ID</th><th>Тип</th><th>LPU фильтр</th><th>Активна</th><th>Статус</th><th>Окна</th></tr></thead>
-                        <tbody>
-                        {% for s in shift_tasks[:8] %}
-                            <tr>
-                                <td>{{ s.id }}</td>
-                                <td>{{ s.service_type }}</td>
-                                <td>{{ s.lpu_substring }}</td>
-                                <td>{{ 'ON' if s.active else 'OFF' }}</td>
-                                <td>{{ s.last_status or '-' }}</td>
-                                <td>
-                                    {% if s.allowed_windows %}<small class="text-success">{{ s.allowed_windows|join(', ') }}</small>{% endif %}
-                                    {% if s.forbidden_windows %}<div><small class="text-danger">! {{ s.forbidden_windows|join(', ') }}</small></div>{% endif %}
-                                </td>
-                            </tr>
-                        {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-                {% else %}
-                    <p>Нет активных задач переноса. <a href="{{ url_for('service_tasks') }}">Создать</a></p>
-                {% endif %}
-            </div>
-        </div>
-    </div>
 {% endblock %}

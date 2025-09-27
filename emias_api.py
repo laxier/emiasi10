@@ -1,8 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+import os, time, threading
 
 import requests, json
 from typing import Optional, Dict, Any
-from database import get_db_session, get_tokens, save_tokens, get_profile, log_user_action
+from database import get_db_session, get_tokens, save_tokens, get_profile, log_user_action, UserToken
 
 
 def get_specialities_info(user_id: int) -> list:
@@ -24,14 +26,56 @@ def get_specialities_info(user_id: int) -> list:
 
 
 def is_token_expired(expires_at):
+    """Проверяет истечение токена, интерпретируя expires_at как время в UTC, если оно naive.
+
+    Раньше использовался datetime.now() (локальное время), что при хранении UTC-наивного expires_at приводило
+    к ложным досрочным истечениям (локальное время > UTC). Теперь сравнение в единой шкале UTC.
     """
-    Проверяем, просрочен ли токен.
-    expires_at — это datetime-объект из БД.
-    """
-    return datetime.now() >= expires_at
+    if not expires_at:
+        return True
+    if expires_at.tzinfo is None:
+        now = datetime.utcnow()
+    else:
+        now = datetime.now(timezone.utc)
+        expires_at = expires_at.astimezone(timezone.utc)
+    return now >= expires_at
 
 
-def refresh_emias_token(user_id: int, source: str = 'system') -> str:
+_REFRESH_THREAD_LOCKS = {}
+MIN_REFRESH_INTERVAL_SEC = 300  # не чаще одного успешного обновления раз в 5 минут (если не force и не истёк)
+LOCK_STALE_SEC = 120            # считать файл-замок протухшим
+LOCK_DIR = (Path(__file__).resolve().parent.parent / 'data')
+LOCK_DIR.mkdir(parents=True, exist_ok=True)
+
+def _acquire_file_lock(user_id: int) -> bool:
+    lock_path = LOCK_DIR / f"refresh_lock_{user_id}"
+    now = time.time()
+    try:
+        if lock_path.exists():
+            try:
+                # stale?
+                if now - lock_path.stat().st_mtime > LOCK_STALE_SEC:
+                    lock_path.unlink(missing_ok=True)
+                else:
+                    return False
+            except Exception:
+                return False
+        # atomic create
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return False
+
+def _release_file_lock(user_id: int):
+    try:
+        (LOCK_DIR / f"refresh_lock_{user_id}").unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def refresh_emias_token(user_id: int, source: str = 'system', force: bool = False) -> str:
     """
     Обновляет access_token для пользователя, используя refreshToken, сохранённый в БД.
 
@@ -60,8 +104,58 @@ def refresh_emias_token(user_id: int, source: str = 'system') -> str:
         print(f"[refresh_emias_token] Токены для пользователя {user_id} не найдены.")
         return None
 
-    # Извлекаем текущий refresh_token из БД
-    _, refresh_token, _ = tokens
+    # Извлекаем текущий refresh_token / expires_at / issued_at (issued_at добавлен в модель)
+    access_token_current, refresh_token, expires_at = tokens
+    # issued_at доступен при чтении токена через ORM, дополнительная выборка не нужна
+
+    # Throttle: если недавно (<=15s) был успешный refresh — возвращаем текущий access_token
+    from database import UserLog, UserToken as _UT
+    try:
+        throttle_sess = get_db_session()
+        last_success = (throttle_sess.query(UserLog)
+                        .filter_by(telegram_user_id=user_id, action='api_refresh_token', status='success')
+                        .order_by(UserLog.timestamp.desc()).first())
+        # Если есть issued_at в user_tokens – используем более точную метку
+        ut_row = throttle_sess.query(_UT).filter_by(telegram_user_id=user_id).first()
+        issued_at_val = getattr(ut_row, 'issued_at', None)
+        now_utc = datetime.utcnow()
+        if not force:
+            if issued_at_val and (now_utc - (issued_at_val if issued_at_val.tzinfo is None else issued_at_val.replace(tzinfo=None))).total_seconds() < MIN_REFRESH_INTERVAL_SEC and not is_token_expired(expires_at):
+                throttle_sess.close()
+                return access_token_current
+            if last_success and (now_utc - last_success.timestamp).total_seconds() < 30 and not is_token_expired(expires_at):
+                throttle_sess.close()
+                return access_token_current
+        throttle_sess.close()
+    except Exception:
+        try:
+            throttle_sess.close()
+        except Exception:
+            pass
+
+    # File lock (межпроцессный) – если не получили, просто возвращаем текущий токен (избегаем гонки)
+    have_lock = _acquire_file_lock(user_id)
+    if not have_lock:
+        if force:
+            # При force ждём немного и ещё раз пробуем (один ретрай)
+            time.sleep(0.4)
+            have_lock = _acquire_file_lock(user_id)
+        if not have_lock:
+            # Не удалось получить лок – при обычном режиме просто возвращаем текущий токен
+            return access_token_current
+
+    # Если токен ещё жив и это не принудительный refresh — не обновляем
+    try:
+        if not force and not is_token_expired(expires_at):
+            if expires_at:
+                exp_dt = expires_at if expires_at.tzinfo is None else expires_at.astimezone(timezone.utc)
+                remaining = (exp_dt - datetime.utcnow()).total_seconds()
+                # Рефрешим только если осталось <= 5 минут
+                if remaining > 300:
+                    _release_file_lock(user_id)
+                    return access_token_current
+    except Exception:
+        pass
 
     url = "https://emias.info/web-api/refreshTokens/"
     headers = {
@@ -86,7 +180,21 @@ def refresh_emias_token(user_id: int, source: str = 'system') -> str:
             save_tokens(session, user_id, new_access_token, new_refresh_token, expires_in)
             # Если источник явно не указан вызывающим кодом (system), предполагаем что чаще это бот
             log_source = source if source else 'system'
-            log_user_action(session, user_id, 'api_refresh_token', 'Токены обновлены', source=log_source, status='success')
+            # Логируем только если токен действительно изменился и интервал прошёл
+            log_ok = True
+            try:
+                if new_access_token == access_token_current:
+                    log_ok = False
+                else:
+                    last_succ = (session.query(UserLog)
+                                 .filter_by(telegram_user_id=user_id, action='api_refresh_token', status='success')
+                                 .order_by(UserLog.timestamp.desc()).first())
+                    if last_succ and (datetime.utcnow() - last_succ.timestamp).total_seconds() < MIN_REFRESH_INTERVAL_SEC:
+                        log_ok = False
+            except Exception:
+                pass
+            if log_ok:
+                log_user_action(session, user_id, 'api_refresh_token', 'Токены обновлены', source=log_source, status='success')
             return new_access_token
         else:
             msg = f"Некорректный ответ при обновлении токена: {data}"
@@ -102,8 +210,19 @@ def refresh_emias_token(user_id: int, source: str = 'system') -> str:
         except Exception:
             body = None
         err = f"Ошибка при обновлении токена: {e}"
+        invalid_grant_note = ''
         if body:
             err += f" | body: {body}"
+            # Попробуем распознать invalid_grant и дать человеку понятный совет
+            try:
+                import json as _json
+                parsed = _json.loads(body)
+                if isinstance(parsed, dict) and parsed.get('error') == 'invalid_grant':
+                    invalid_grant_note = ' (invalid_grant: refresh_token недействителен или просрочен — нужно заново получить новые токены)'
+            except Exception:
+                pass
+        if invalid_grant_note:
+            err += invalid_grant_note
         print(err)
         # Первая попытка логирования в текущей сессии
         logged = False
@@ -123,6 +242,7 @@ def refresh_emias_token(user_id: int, source: str = 'system') -> str:
         return None
     finally:
         session.close()
+        _release_file_lock(user_id)
 
 
 def emias_post_request(
@@ -477,18 +597,10 @@ def get_available_resource_schedule_info(
         "birthDate": profile.birth_date,
         "availableResourceId": available_resource_id,
         "complexResourceId": complex_resource_id,
-    }
-    if appointment_id:
-        # Конвертируем при необходимости
-        if isinstance(appointment_id, str):
-            try:
-                payload["appointmentId"] = int(appointment_id)
-            except Exception:
-                payload["appointmentId"] = appointment_id
-        else:
-            payload["appointmentId"] = appointment_id
-    else:
-        payload["inquiryPurposeId"] = inquiry_purpose_id
+    **({"appointmentId": int(appointment_id) if isinstance(appointment_id, str) else appointment_id} if appointment_id else {
+        "inquiryPurposeId": inquiry_purpose_id
+    })
+}
     response = emias_post_request(user_id, url, payload)
 
     # Автосохранение расписания в doctor_schedules при любом успешном ответе с scheduleOfDay

@@ -73,7 +73,7 @@
             <thead>
                 <tr>
                     <th style="width:30px;"><input type="checkbox" id="masterCheck"></th>
-                    <th style="width:260px;">Метка / время</th>
+                    <th style="width:260px;">Метка / время (МСК)</th>
                     <th>Действие</th>
                     <th>Детали</th>
                 </tr>
@@ -87,7 +87,9 @@
                             {% if st in ['fail'] %}{% set st = 'error' %}{% endif %}
                             {% if st == 'success' %}{% set st = 'success' %}{% elif st == 'warning' %}{% set st = 'warn' %}{% elif st in ['error','fail'] %}{% set st = 'error' %}{% elif st == 'info' %}{% set st = 'info' %}{% endif %}
                             {% set src = log.source if log.source else '?' %}
-                            [{{ st|upper }} {{ src|upper }}] {{ log.pretty_time if log.pretty_time is defined and log.pretty_time else log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+                            {# Отображаем в МСК (UTC+3) если есть pretty_time иначе timestamp #}
+                            {% set base_time = log.pretty_time if log.pretty_time is defined and log.pretty_time else log.timestamp.strftime('%Y-%m-%d %H:%M:%S') %}
+                            [{{ st|upper }} {{ src|upper }}] {{ base_time }} (МСК)
                         </td>
                         <td>{{ log.action }}</td>
                         <td class="text-break small">{{ log.details or '' }}</td>

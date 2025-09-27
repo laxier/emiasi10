@@ -13,42 +13,41 @@ from database import (
     DoctorSchedule,
     save_tokens,
     Specialty,
-    UserDoctorLink,
-    ServiceShiftTask,
-    ServiceResource,
-    SERVICE_SPECIALITY_CODES
+    UserDoctorLink
 )
-from emias_api import get_whoami, get_assignments_referrals_info, get_available_resource_schedule_info
+from emias_api import (
+    get_whoami,
+    get_assignments_referrals_info,
+    get_available_resource_schedule_info,
+    get_appointment_receptions_by_patient,
+    refresh_emias_token,
+)
 import json, datetime as dt
+from datetime import timezone, timedelta
 import os
+from sqlalchemy import text
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')
 
+# ---- Вспомогательные функции (восстановленные) ----
 def format_tracking_rules(rules):
-    """Преобразует правила отслеживания в человекочитаемый формат"""
     if not rules:
         return 'Нет'
-    
     formatted = []
     for rule in rules:
         if isinstance(rule, dict):
-            # JSON объект из бота
             value = rule.get('value', '')
             time_ranges = rule.get('timeRanges', [])
-            
             if time_ranges:
                 for tr in time_ranges:
                     formatted.append(f"{value}: {tr}")
             else:
                 formatted.append(value)
         else:
-            # Строковый формат
             formatted.append(str(rule))
-    
     return ', '.join(formatted)
 
-# Добавляем функцию в контекст шаблонов
 @app.template_filter('format_rules')
 def format_rules_filter(rules):
     return format_tracking_rules(rules)
@@ -74,7 +73,6 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
-        # Аутентификация по username (telegram_user_id) и password
         try:
             user_id = int(username)
         except ValueError:
@@ -102,7 +100,6 @@ def user_dashboard():
     session_db = get_db_session()
     tokens = session_db.query(UserToken).filter_by(telegram_user_id=user_id).first()
     tracked = session_db.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id).all()
-    shift_tasks = session_db.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).all()
     favorites = session_db.query(UserFavoriteDoctor).filter_by(telegram_user_id=user_id).all()
     
     # Получить информацию о врачах
@@ -112,13 +109,29 @@ def user_dashboard():
     doctors = session_db.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(all_ids)).all()
     doctor_dict = {d.doctor_api_id: d for d in doctors}
     
+    # Логи токенов: ищем последний success и последний error для api_refresh_token
+    last_refresh_log = session_db.query(UserLog).filter_by(telegram_user_id=user_id, action='api_refresh_token').order_by(UserLog.timestamp.desc()).first()
+    last_success_refresh = session_db.query(UserLog).filter_by(telegram_user_id=user_id, action='api_refresh_token', status='success').order_by(UserLog.timestamp.desc()).first()
+    last_error_refresh = session_db.query(UserLog).filter_by(telegram_user_id=user_id, action='api_refresh_token', status='error').order_by(UserLog.timestamp.desc()).first()
     session_db.close()
     token_status = None
     remaining_seconds = None
     last_token_update = None
+    token_error = None
+    token_error_details = None
+    last_refresh_attempt = None
+    show_refresh_attempt = False
+    issued_at_raw = getattr(tokens, 'issued_at', None) if tokens else None
     if tokens and getattr(tokens, 'expires_at', None):
-        now = dt.datetime.utcnow()
-        delta = (tokens.expires_at - now).total_seconds()
+        MSK = timezone(timedelta(hours=3))
+        expires_at_raw = tokens.expires_at
+        # Трактуем naive как UTC (старое поведение сохранения) и конвертируем в МСК для отображения
+        if expires_at_raw.tzinfo is None:
+            expires_at_utc = expires_at_raw.replace(tzinfo=timezone.utc)
+        else:
+            expires_at_utc = expires_at_raw.astimezone(timezone.utc)
+        now_utc = dt.datetime.now(timezone.utc)
+        delta = (expires_at_utc - now_utc).total_seconds()
         remaining_seconds = int(delta)
         if delta <= 0:
             token_status = 'expired'
@@ -126,11 +139,115 @@ def user_dashboard():
             token_status = 'soon'
         else:
             token_status = 'ok'
+        # Используем issued_at напрямую (теперь колонка обязательна)
         try:
-            last_token_update = tokens.expires_at - dt.timedelta(seconds=3600)
+            if issued_at_raw:
+                if issued_at_raw.tzinfo is None:
+                    issued_utc = issued_at_raw.replace(tzinfo=timezone.utc)
+                else:
+                    issued_utc = issued_at_raw.astimezone(timezone.utc)
+                last_token_update = issued_utc.astimezone(MSK)
         except Exception:
-            pass
-    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update, shift_tasks=shift_tasks)
+            last_token_update = None
+    # Анализ последней попытки refresh: если последний лог об ошибке – показываем пользователю
+    # Определяем какая попытка (берём последнюю по времени вообще)
+    if last_refresh_log:
+        ts = last_refresh_log.timestamp
+        if ts:
+            if ts.tzinfo is None:
+                ts_utc = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts_utc = ts.astimezone(timezone.utc)
+            last_refresh_attempt = ts_utc.astimezone(MSK)
+
+    # Определяем, показывать ли ошибку: только если после неё НЕ было success.
+    if last_error_refresh:
+        show_error = True
+        if last_success_refresh and last_success_refresh.timestamp and last_error_refresh.timestamp:
+            if last_success_refresh.timestamp > last_error_refresh.timestamp:
+                show_error = False  # ошибка устарела, есть более поздний успех
+        if show_error:
+            token_error = True
+            token_error_details = last_error_refresh.details
+            if token_status not in ['expired']:
+                token_status = 'error'
+    # Решение дублирования: показываем строку "Последняя попытка refresh" только если:
+    #  - есть ошибка (token_error)
+    #  - или нет issued_at (last_token_update is None)
+    #  - или время попытки существенно отличается (>2 сек) от issued_at
+    try:
+        if last_refresh_attempt:
+            if token_error or not last_token_update:
+                show_refresh_attempt = True
+            else:
+                diff = abs(int(last_refresh_attempt.timestamp()) - int(last_token_update.timestamp()))
+                if diff > 2:
+                    show_refresh_attempt = True
+    except Exception:
+        pass
+    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update, token_error=token_error, token_error_details=token_error_details, last_refresh_attempt=last_refresh_attempt, show_refresh_attempt=show_refresh_attempt)
+
+@app.route('/user/refresh_token', methods=['POST'])
+def manual_refresh_token():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    user_id = session['user_id']
+    # Принудительная попытка обновить токен даже если он ещё не истёк (force=True)
+    sess = get_db_session()
+    current = sess.query(UserToken).filter_by(telegram_user_id=user_id).first()
+    old_access = current.access_token if current else None
+    sess.close()
+    new_access = refresh_emias_token(user_id, source='web', force=True)
+    if new_access is None:
+        flash('Не удалось обновить токен (см. лог).', 'danger')
+    else:
+        if old_access and new_access == old_access:
+            flash('Принудительный запрос выполнен: токен уже был актуален (сервер вернул тот же).', 'info')
+        else:
+            flash('Токен успешно обновлён (force).', 'success')
+    return redirect(url_for('user_dashboard'))
+    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update)
+
+## Удалены все маршруты /lpu* (по запросу)
+
+@app.route('/diagnostics')
+def diagnostics_index():
+    """Список диагностических кодов (УЗИ, ЭКГ и т.п.) найденных в базе.
+    Формируется автоматически по названиям Specialty / DoctorInfo.ar_speciality_name.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    keywords = [
+        'узи', 'ультраз', 'эхо', 'эхокар', 'экг', 'cут', 'холтер', 'дуплекс', 'допплер'
+    ]
+    sess = get_db_session()
+    try:
+        # Собираем все специальности и врачей
+        specs = sess.query(Specialty).all()
+        # map code -> name
+        diag_specs = {}
+        for sp in specs:
+            nm = (sp.name or '').lower()
+            if any(k in nm for k in keywords):
+                diag_specs[sp.code] = sp.name
+        # Добавим из DoctorInfo (на случай если спец ещё не в Specialty)
+        docs = sess.query(DoctorInfo).all()
+        for d in docs:
+            nm = (d.ar_speciality_name or '').lower()
+            if nm and any(k in nm for k in keywords):
+                diag_specs.setdefault(d.ar_speciality_id, d.ar_speciality_name)
+        # Подсчёт сколько ресурсов по коду
+        counts = {c: 0 for c in diag_specs}
+        for d in docs:
+            if d.ar_speciality_id in counts:
+                counts[d.ar_speciality_id] += 1
+        result = [
+            {'code': code, 'name': diag_specs[code], 'count': counts.get(code, 0)}
+            for code in sorted(diag_specs, key=lambda x: (diag_specs[x] or '', x)) if code
+        ]
+    finally:
+        sess.close()
+    return render_template('diagnostics.html', diagnostics=result)
 
 @app.route('/user/update_tokens', methods=['POST'])
 def user_update_tokens():
@@ -189,9 +306,8 @@ def admin_dashboard():
     session_db = get_db_session()
     users = session_db.query(UserProfile).all()
     doctors = session_db.query(DoctorInfo).all()
-    service_count = session_db.query(ServiceResource).count()
     session_db.close()
-    return render_template('admin_dashboard.html', users=users, doctors=doctors, models=ADMIN_MODELS, service_count=service_count, SERVICE_SPECIALITY_CODES=SERVICE_SPECIALITY_CODES)
+    return render_template('admin_dashboard.html', users=users, doctors=doctors, models=ADMIN_MODELS)
 
 
 def _get_ldp_specialty_codes(sess):
@@ -227,22 +343,6 @@ def admin_bulk():
                 flash(f'Обновлено LDP специальностей: {updated} (policy={policy})', 'success')
                 try:
                     log_user_action(sess, session.get('user_id'), 'admin_bulk', f'set_ldp_policy policy={policy} updated={updated}', source='web', status='info')
-                except Exception:
-                    pass
-        elif action == 'set_service_policy':
-            try:
-                policy = int(request.form.get('policy', 1))
-            except Exception:
-                policy = 1
-            codes = list(SERVICE_SPECIALITY_CODES)
-            if not codes:
-                flash('SERVICE_SPECIALITY_CODES пуст', 'warning')
-            else:
-                updated = sess.query(Specialty).filter(Specialty.code.in_(codes)).update({'referral_policy': policy}, synchronize_session=False)
-                sess.commit()
-                flash(f'Обновлено сервисных спец: {updated} policy={policy}', 'success')
-                try:
-                    log_user_action(sess, session.get('user_id'), 'admin_bulk', f'set_service_policy policy={policy} updated={updated}', source='web', status='info')
                 except Exception:
                     pass
         elif action == 'trim_logs':
@@ -324,19 +424,11 @@ ADMIN_MODELS = {
     },
     'doctor': {
         'model': DoctorInfo,
-        'title': 'Врачи',
+        'title': 'Врачи/Ресурсы',
         'editable': ['name','ar_speciality_id','ar_speciality_name','complex_resource_id'],
         'create': False,
         'delete': False,
         'order_by': 'doctor_api_id'
-    },
-    'service_resource': {
-        'model': ServiceResource,
-        'title': 'Кабинеты / Услуги',
-        'editable': ['name','speciality_id','speciality_name','complex_resource_id','resource_type'],
-        'create': False,
-        'delete': False,
-        'order_by': 'resource_api_id'
     },
     'tracked': {
         'model': UserTrackedDoctor,
@@ -356,7 +448,7 @@ ADMIN_MODELS = {
     },
     'link': {
         'model': UserDoctorLink,
-        'title': 'Связки пользователь → спец/услуга',
+        'title': 'Связки пользователь-специальность',
         'editable': ['appointment_id','referral_id'],
         'create': False,
         'delete': True,
@@ -371,6 +463,26 @@ ADMIN_MODELS = {
         'order_by': 'timestamp'
     }
 }
+
+def _instance_label(model_key, obj):
+    """Упрощённая подпись экземпляра: во всех случаях, если есть поле name — берём его.
+    Иначе используем fallback по ключевым идентификаторам.
+    Пользователь уточнил: ФИО это name и почти везде поле называется name, поэтому без лишних конструкций.
+    """
+    if not obj:
+        return ''
+    try:
+        name_val = getattr(obj, 'name', None)
+        if name_val:
+            return str(name_val)
+        # fallback generic по важным атрибутам
+        for attr in ('code','doctor_api_id','telegram_user_id','ar_speciality_name','action'):
+            v = getattr(obj, attr, None)
+            if v:
+                return str(v)
+    except Exception:
+        return ''
+    return ''
 
 def _coerce_value(current, value: str):
     if value == '':
@@ -456,12 +568,48 @@ def admin_model_edit(model_key, obj_id):
                     setattr(obj, field, new_val)
                     changed_fields.append(field)
         session_db.commit()
+        # Сформировать ярлык до закрытия сессии, чтобы избежать DetachedInstanceError
         try:
-            log_user_action(session_db, session.get('user_id'), 'admin_edit', f'{model_key}#{obj_id} поля: {",".join(changed_fields)}', source='web', status='info')
+            label_for_flash = _instance_label(model_key, obj)
         except Exception:
-            pass
-    session_db.close()
-    return redirect(url_for('admin_model_list', model_key=model_key))
+            label_for_flash = None
+        # Логируем до закрытия сессии
+        if changed_fields:
+            try:
+                ident = label_for_flash or f'{model_key}#{obj_id}'
+                log_user_action(session_db, session.get('user_id'), 'admin_edit', f'{ident} поля: {", ".join(changed_fields)}', source='web', status='info')
+            except Exception:
+                pass
+        session_db.close()
+        # Сообщение и возврат к списку модели
+        if changed_fields:
+            lbl = label_for_flash
+            if model_key == 'doctor':
+                if isinstance(lbl, str) and lbl.strip():
+                    fio_lower = ' '.join(part for part in lbl.strip().split())  # normalize spaces
+                    fio_lower = fio_lower.lower()
+                    prefix = f'доктор {fio_lower}'
+                else:
+                    prefix = 'доктор'
+            else:
+                prefix = lbl or f'{model_key}#{obj_id}'
+            if len(changed_fields) == 1:
+                flash(f'{prefix}: изменено поле: {changed_fields[0]}', 'success')
+            else:
+                flash(f'{prefix}: изменены поля: {", ".join(changed_fields)}', 'success')
+        else:
+            lbl = label_for_flash
+            if model_key == 'doctor':
+                if isinstance(lbl, str) and lbl.strip():
+                    fio_lower = ' '.join(part for part in lbl.strip().split())
+                    fio_lower = fio_lower.lower()
+                    prefix = f'доктор {fio_lower}'
+                else:
+                    prefix = 'доктор'
+            else:
+                prefix = lbl or f'{model_key}#{obj_id}'
+            flash(f'{prefix}: нет изменений', 'info')
+        return redirect(url_for('admin_model_list', model_key=model_key))
     # For display we just pass object
     session_db.close()
     return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj)
@@ -484,7 +632,8 @@ def admin_model_delete(model_key, obj_id):
         except Exception:
             pass
     session_db.close()
-    return redirect(url_for('admin_dashboard'))
+    # После удаления возвращаемся к списку соответствующей модели
+    return redirect(url_for('admin_model_list', model_key=model_key))
 
 @app.route('/admin/user/<int:user_id>/make_admin', methods=['POST'])
 def make_admin(user_id):
@@ -888,11 +1037,11 @@ def add_track():
                 session_db.add(track)
                 doctor = session_db.query(DoctorInfo).filter_by(doctor_api_id=doctor_id).first()
                 doctor_name = doctor.name if doctor else f'ID: {doctor_id}'
-                # Единый лог вместо двух, чтобы на сайте не выглядело как дублирование уведомлений
-                rules_info = f", правил: {len(dedup_rules)}" if dedup_rules else ""
-                log_user_action(session_db, user_id, 'Добавлено отслеживание', f'Врач: {doctor_name}{rules_info}', source='web', status='success')
+                log_user_action(session_db, user_id, 'Добавлено отслеживание', f'Врач: {doctor_name}', source='web', status='success')
+                if dedup_rules:
+                    log_user_action(session_db, user_id, 'Создание правил', f'Врач: {doctor_name}, правил: {len(dedup_rules)}', source='web', status='success')
                 session_db.commit()
-                flash('Врач добавлен в отслеживание', 'success')
+                flash('Врач добавлен в отслеживание!', 'success')
             else:
                 # Добавляем новые правила к существующим без дублей
                 current = existing.tracking_rules or []
@@ -986,182 +1135,6 @@ def add_track():
     session_db.close()
     return render_template('add_track.html', doctors=doctors, schedule_days=schedule_days, preview_doctor_id=preview_doctor_id, sched=sched)
 
-
-# --- Service Shift Tasks (Blood / ECG) ---
-
-def _parse_time_windows(raw: str):
-    windows = []
-    for part in (raw or '').split(','):
-        part = part.strip()
-        if not part or '-' not in part:
-            continue
-        a, b = part.split('-', 1)
-        a = a.strip()
-        b = b.strip()
-        if len(a) == 5 and len(b) == 5:
-            windows.append(f"{a}-{b}")
-    return windows
-
-@app.route('/user/service_tasks', methods=['GET','POST'])
-def service_tasks():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    user_id = session['user_id']
-    sess = get_db_session()
-    try:
-        if request.method == 'POST':
-            task_id = request.form.get('task_id')
-            if task_id:  # update / toggle
-                task = sess.query(ServiceShiftTask).filter_by(id=task_id, telegram_user_id=user_id).first()
-                if task:
-                    if 'toggle' in request.form:
-                        task.active = not task.active
-                        log_user_action(sess, user_id, 'service_task_toggle', f'task={task.id} now={task.active}', source='web', status='info')
-                    else:
-                        new_type = request.form.get('service_type', task.service_type)
-                        task.service_type = new_type
-                        task.lpu_substring = request.form.get('lpu_substring', task.lpu_substring)
-                        # Обновление правил (если переданы)
-                        if 'service_rules' in request.form:
-                            raw_rules_str = request.form.get('service_rules','').strip()
-                            if raw_rules_str:
-                                try:
-                                    from rules_parser import parse_user_tracking_input
-                                    parsed_rules = parse_user_tracking_input(raw_rules_str)
-                                    task.service_rules = parsed_rules or None
-                                except Exception as e:
-                                    print(f"[service_tasks] rules parse error: {e}")
-                            else:
-                                task.service_rules = None
-                        # Авто-определение referral_required по политике специальности, если выбран код
-                        ref_flag_form = bool(request.form.get('referral_required'))
-                        if new_type and new_type.isdigit():
-                            spec_obj = sess.query(Specialty).filter_by(code=new_type).first()
-                            if spec_obj:
-                                if spec_obj.referral_policy == 0:  # strict
-                                    task.referral_required = True
-                                elif spec_obj.referral_policy == 2:  # always allow
-                                    task.referral_required = False
-                                else:  # fallback – пользовательский чекбокс
-                                    task.referral_required = ref_flag_form
-                            else:
-                                task.referral_required = ref_flag_form
-                        else:
-                            task.referral_required = ref_flag_form
-                        task.allowed_windows = _parse_time_windows(request.form.get('allowed_windows'))
-                        task.forbidden_windows = _parse_time_windows(request.form.get('forbidden_windows'))
-                        # week days
-                        wd_raw = request.form.getlist('week_days')
-                        task.week_days = [int(x) for x in wd_raw if x.isdigit()] or None
-                        # exact dates
-                        ed_raw = request.form.get('exact_dates','')
-                        dates = []
-                        for part in ed_raw.split(','):
-                            p = part.strip()
-                            if len(p)==10 and p[4]=='-' and p[7]=='-':
-                                dates.append(p)
-                        task.exact_dates = dates or None
-                        task.mode = request.form.get('mode', task.mode or 'shift')
-                        log_user_action(sess, user_id, 'service_task_update', f'task={task.id}', source='web', status='success')
-                    sess.commit()
-            else:  # create
-                # service_type может быть алиасом ('blood','ecg') либо напрямую кодом специальности (напр. 600020)
-                service_type = request.form.get('service_type') or 'blood'
-                lpu_sub = request.form.get('lpu_substring') or ''
-                if lpu_sub:
-                    # Определяем referral_required с учётом политики
-                    ref_flag_form = bool(request.form.get('referral_required'))
-                    ref_required = ref_flag_form
-                    if service_type.isdigit():
-                        spec_obj = sess.query(Specialty).filter_by(code=service_type).first()
-                        if spec_obj:
-                            if spec_obj.referral_policy == 0:
-                                ref_required = True
-                            elif spec_obj.referral_policy == 2:
-                                ref_required = False
-                    # week days
-                    wd_raw = request.form.getlist('week_days')
-                    week_days = [int(x) for x in wd_raw if x.isdigit()] or None
-                    # exact dates
-                    ed_raw = request.form.get('exact_dates','')
-                    dates = []
-                    for part in ed_raw.split(','):
-                        p = part.strip()
-                        if len(p)==10 and p[4]=='-' and p[7]=='-':
-                            dates.append(p)
-                    task = ServiceShiftTask(
-                        telegram_user_id=user_id,
-                        service_type=service_type,
-                        lpu_substring=lpu_sub,
-                        referral_required=ref_required,
-                        allowed_windows=_parse_time_windows(request.form.get('allowed_windows')),
-                        forbidden_windows=_parse_time_windows(request.form.get('forbidden_windows')),
-                        week_days=week_days,
-                        exact_dates=dates or None,
-                        mode=request.form.get('mode','shift'),
-                        service_rules=None
-                    )
-                    # Первичное заполнение правил если переданы
-                    raw_rules_str = request.form.get('service_rules','').strip()
-                    if raw_rules_str:
-                        try:
-                            from rules_parser import parse_user_tracking_input
-                            parsed_rules = parse_user_tracking_input(raw_rules_str)
-                            task.service_rules = parsed_rules or None
-                        except Exception as e:
-                            print(f"[service_tasks] rules parse error (create): {e}")
-                    sess.add(task)
-                    sess.commit()
-                    log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')
-        from sqlalchemy.exc import OperationalError
-        try:
-            tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
-        except OperationalError as e:
-            if 'service_rules' in str(e):
-                # Пытаемся мигрировать схему и повторить
-                try:
-                    from database import ensure_service_shift_schema
-                    ensure_service_shift_schema()
-                except Exception:
-                    pass
-                sess.rollback()
-                try:
-                    tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
-                except Exception as e2:
-                    tasks = []
-                    print(f"[service_tasks] retry after migrate failed: {e2}")
-            else:
-                raise
-        # Предлагаем список LDP специальностей для выбора как service_type (код)
-        from database import SERVICE_SPECIALITY_CODES as _SVC_CODES
-        ldp_specs = (
-            sess.query(Specialty)
-            .filter(Specialty.code.in_(list(_SVC_CODES)))
-            .order_by(Specialty.code.asc())
-            .all()
-        )
-    finally:
-        sess.close()
-    # Подготовим словарь политик направления для фронта: code -> referral_policy
-    spec_policies = {s.code: (s.referral_policy if s.referral_policy is not None else 1) for s in ldp_specs}
-    return render_template('service_tasks.html', tasks=tasks, ldp_specs=ldp_specs, spec_policies=spec_policies)
-
-@app.route('/user/service_tasks/delete/<int:task_id>', methods=['POST'])
-def delete_service_task(task_id):
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    user_id = session['user_id']
-    sess = get_db_session()
-    try:
-        task = sess.query(ServiceShiftTask).filter_by(id=task_id, telegram_user_id=user_id).first()
-        if task:
-            log_user_action(sess, user_id, 'service_task_delete', f'task={task.id}', source='web', status='warning')
-            sess.delete(task)
-            sess.commit()
-    finally:
-        sess.close()
-    return redirect(url_for('service_tasks'))
-
 @app.route('/user/logs')
 def user_logs():
     if 'user_id' not in session:
@@ -1201,11 +1174,18 @@ def user_logs():
             doc_map = {}
         # Форматированная дата и подстановка имён
         months_rus = {1:'янв',2:'фев',3:'мар',4:'апр',5:'мая',6:'июн',7:'июл',8:'авг',9:'сен',10:'окт',11:'ноя',12:'дек'}
+        msk_tz = dt.timezone(dt.timedelta(hours=3))
         for lg in logs:
             # Красивый формат времени: 27 сен 12:34:56
             try:
                 ts = lg.timestamp
-                lg.pretty_time = f"{ts.day} {months_rus.get(ts.month, ts.month)} {ts.strftime('%H:%M:%S')}"
+                # Преобразуем к UTC (если naive считаем что это UTC), затем в МСК
+                if ts.tzinfo is None:
+                    ts_utc = ts.replace(tzinfo=dt.timezone.utc)
+                else:
+                    ts_utc = ts.astimezone(dt.timezone.utc)
+                ts_msk = ts_utc.astimezone(msk_tz)
+                lg.pretty_time = f"{ts_msk.day} {months_rus.get(ts_msk.month, ts_msk.month)} {ts_msk.strftime('%H:%M:%S')}"
             except Exception:
                 lg.pretty_time = ''
             if lg.details and 'Доктор ' in lg.details:
@@ -1281,6 +1261,20 @@ def admin_logs():
             selected_user_id = session['user_id']
         query = query.filter(UserLog.telegram_user_id == selected_user_id)
     logs = query.order_by(UserLog.timestamp.desc()).limit(200).all()
+    # Подготовим pretty_time в МСК так же как и для user_logs
+    months_rus = {1:'янв',2:'фев',3:'мар',4:'апр',5:'мая',6:'июн',7:'июл',8:'авг',9:'сен',10:'окт',11:'ноя',12:'дек'}
+    msk_tz = dt.timezone(dt.timedelta(hours=3))
+    for lg in logs:
+        try:
+            ts = lg.timestamp
+            if ts.tzinfo is None:
+                ts_utc = ts.replace(tzinfo=dt.timezone.utc)
+            else:
+                ts_utc = ts.astimezone(dt.timezone.utc)
+            ts_msk = ts_utc.astimezone(msk_tz)
+            lg.pretty_time = f"{ts_msk.day} {months_rus.get(ts_msk.month, ts_msk.month)} {ts_msk.strftime('%H:%M:%S')}"
+        except Exception:
+            lg.pretty_time = ''
     session_db.close()
     return render_template('admin_logs.html', logs=logs, selected_user_id=selected_user_id, show_all=show_all)
 

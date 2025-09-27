@@ -28,7 +28,7 @@
             <thead>
                 <tr>
                     {% if show_all %}<th>Пользователь</th>{% endif %}
-                    <th>Метка / время</th>
+                    <th>Метка / время (МСК)</th>
                     <th>Действие</th>
                     <th>Детали</th>
                 </tr>
@@ -42,7 +42,10 @@
                             {% if st in ['fail'] %}{% set st = 'error' %}{% endif %}
                             {% if st == 'success' %}{% set st = 'success' %}{% elif st == 'warning' %}{% set st = 'warn' %}{% elif st in ['error','fail'] %}{% set st = 'error' %}{% elif st == 'info' %}{% set st = 'info' %}{% endif %}
                             {% set src = log.source if log.source else '?' %}
-                            [{{ st|upper }} {{ src|upper }}] {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+                            {# Предполагаем что timestamp в UTC - отображаем как МСК #}
+                            {% set msk_time = (log.timestamp.replace(tzinfo=namespace.utc) if false else log.timestamp) %}
+                            {# Используем pretty_time подготовленную на сервере и явно помечаем МСК #}
+                            [{{ st|upper }} {{ src|upper }}] {{ log.pretty_time if log.pretty_time else log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }} (МСК)
                         </td>
                         <td>{{ log.action }}</td>
                         <td class="text-break small">{{ log.details or '' }}</td>
