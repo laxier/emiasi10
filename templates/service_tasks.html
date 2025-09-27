@@ -26,10 +26,91 @@
         <label class="form-label">Запрещённые окна</label>
         <input name="forbidden_windows" class="form-control form-control-sm" placeholder="11:00-11:30">
       </div>
-      <div class="col-md-4">
+      <div class="col-md-6">
         <label class="form-label">Правила (как у врачей)</label>
-        <input name="service_rules" class="form-control form-control-sm" placeholder="понедельник 10:00-12:00, 2025-10-01 09:00-11:00">
-        <div class="form-text small">Можно: понедельник 08:00-12:00, сегодня 10:00-14:00, 2025-10-01 09:00-11:00</div>
+        <div class="border rounded p-2 bg-light">
+          <div class="row g-2 align-items-end">
+            <div class="col-md-2">
+              <label class="form-label small mb-1">Тип</label>
+              <select class="form-select form-select-sm" id="sr_ruleType">
+                <option value="weekday">День недели</option>
+                <option value="date">Дата</option>
+                <option value="relative">Сегодня/Завтра</option>
+                <option value="range">Диапазон дат</option>
+              </select>
+            </div>
+            <div class="col-md-2" id="sr_weekdayWrap">
+              <label class="form-label small mb-1">День</label>
+              <select class="form-select form-select-sm" id="sr_weekday">
+                <option value="понедельник">Понедельник</option>
+                <option value="вторник">Вторник</option>
+                <option value="среда">Среда</option>
+                <option value="четверг">Четверг</option>
+                <option value="пятница">Пятница</option>
+                <option value="суббота">Суббота</option>
+                <option value="воскресенье">Воскресенье</option>
+              </select>
+            </div>
+            <div class="col-md-3 d-none" id="sr_dateWrap">
+              <label class="form-label small mb-1">Дата</label>
+              <input type="date" class="form-control form-control-sm" id="sr_dateVal" />
+            </div>
+            <div class="col-md-2 d-none" id="sr_relativeWrap">
+              <label class="form-label small mb-1">Относительно</label>
+              <select class="form-select form-select-sm" id="sr_relativeVal">
+                <option value="сегодня">Сегодня</option>
+                <option value="завтра">Завтра</option>
+              </select>
+            </div>
+            <div class="col-md-4 d-none" id="sr_rangeWrap">
+              <label class="form-label small mb-1">Диапазон дат</label>
+              <div class="d-flex flex-column gap-1">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">От</span>
+                  <input type="date" class="form-control" id="sr_rangeStart" />
+                </div>
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text">Дней</span>
+                  <input type="range" class="form-range" id="sr_rangeDays" min="1" max="30" value="1" />
+                </div>
+                <div class="small text-muted" id="sr_rangeInfo">Выберите дату начала</div>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small mb-1">Время</label>
+              <div class="d-flex flex-column gap-1">
+                <div class="d-flex gap-1">
+                  <select class="form-select form-select-sm" id="sr_preset">
+                    <option value="">Свое...</option>
+                    <option value="08:00-12:00">08:00-12:00</option>
+                    <option value="09:00-13:00">09:00-13:00</option>
+                    <option value="10:00-14:00">10:00-14:00</option>
+                    <option value="14:00-18:00">14:00-18:00</option>
+                    <option value="15:00-19:00">15:00-19:00</option>
+                  </select>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="sr_swap">⇄</button>
+                </div>
+                <div class="d-flex align-items-center gap-1">
+                  <input type="time" class="form-control form-control-sm" id="sr_timeFrom" value="09:00" />
+                  <span class="small">-</span>
+                  <input type="time" class="form-control form-control-sm" id="sr_timeTo" value="13:00" />
+                </div>
+                <div class="d-flex flex-wrap gap-1 small" id="sr_quick">
+                  <button type="button" class="btn btn-outline-primary btn-sm" data-range="08:00-11:00">08-11</button>
+                  <button type="button" class="btn btn-outline-primary btn-sm" data-range="11:00-14:00">11-14</button>
+                  <button type="button" class="btn btn-outline-primary btn-sm" data-range="12:00-16:00">12-16</button>
+                  <button type="button" class="btn btn-outline-primary btn-sm" data-range="16:00-20:00">16-20</button>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <button type="button" class="btn btn-success btn-sm w-100" id="sr_add">Добавить</button>
+            </div>
+          </div>
+          <input type="hidden" name="service_rules" id="sr_rulesInput" />
+          <div class="mt-2" id="sr_rulesList"><div class="text-muted small">Правил пока нет.</div></div>
+          <div class="form-text small">Примеры: понедельник 08:00-12:00, сегодня 10:00-14:00, 2025-10-01 09:00-11:00</div>
+        </div>
       </div>
       <div class="col-md-3">
         <label class="form-label">Дни недели</label>
@@ -115,6 +196,81 @@
               </form>
             </td>
           </tr>
+
+              // --- Service rules builder ---
+              const sr = {
+                ruleType: document.getElementById('sr_ruleType'),
+                weekdayWrap: document.getElementById('sr_weekdayWrap'),
+                dateWrap: document.getElementById('sr_dateWrap'),
+                relativeWrap: document.getElementById('sr_relativeWrap'),
+                rangeWrap: document.getElementById('sr_rangeWrap'),
+                weekday: document.getElementById('sr_weekday'),
+                dateVal: document.getElementById('sr_dateVal'),
+                relativeVal: document.getElementById('sr_relativeVal'),
+                rangeStart: document.getElementById('sr_rangeStart'),
+                rangeDays: document.getElementById('sr_rangeDays'),
+                rangeInfo: document.getElementById('sr_rangeInfo'),
+                timeFrom: document.getElementById('sr_timeFrom'),
+                timeTo: document.getElementById('sr_timeTo'),
+                preset: document.getElementById('sr_preset'),
+                swap: document.getElementById('sr_swap'),
+                quick: document.getElementById('sr_quick'),
+                addBtn: document.getElementById('sr_add'),
+                rulesInput: document.getElementById('sr_rulesInput'),
+                rulesList: document.getElementById('sr_rulesList'),
+                rules: []
+              };
+
+              function srSync(){ sr.rulesInput.value = sr.rules.join(', '); }
+              function srRender(){
+                if(!sr.rules.length){ sr.rulesList.innerHTML = '<div class="text-muted small">Правил пока нет.</div>'; return; }
+                sr.rulesList.innerHTML = '';
+                sr.rules.forEach((r,i)=>{
+                  const div=document.createElement('div');
+                  div.className='alert alert-secondary py-1 px-2 d-flex justify-content-between align-items-center mb-1';
+                  div.style.fontSize='0.75rem';
+                  div.innerHTML = `<span>${r}</span><button type="button" class="btn btn-sm btn-outline-danger" data-idx="${i}">×</button>`;
+                  sr.rulesList.appendChild(div);
+                });
+              }
+              sr.rulesList.addEventListener('click', e=>{
+                const btn=e.target.closest('button[data-idx]');
+                if(!btn)return; const idx=parseInt(btn.getAttribute('data-idx')); sr.rules.splice(idx,1); srSync(); srRender();
+              });
+              function srUpdateRangeInfo(){
+                const start=sr.rangeStart.value; const days=parseInt(sr.rangeDays.value||'1',10);
+                if(!start){ sr.rangeInfo.textContent='Выберите дату начала'; return; }
+                const s=new Date(start); const e=new Date(s.getTime()+(days-1)*86400000); sr.rangeInfo.textContent = `До: ${e.toISOString().slice(0,10)} (${days} дн.)`;
+              }
+              sr.rangeStart?.addEventListener('change', srUpdateRangeInfo);
+              sr.rangeDays?.addEventListener('input', srUpdateRangeInfo);
+              sr.ruleType.addEventListener('change', ()=>{
+                ['weekdayWrap','dateWrap','relativeWrap','rangeWrap'].forEach(k=>sr[k].classList.add('d-none'));
+                if(sr.ruleType.value==='weekday') sr.weekdayWrap.classList.remove('d-none');
+                if(sr.ruleType.value==='date') sr.dateWrap.classList.remove('d-none');
+                if(sr.ruleType.value==='relative') sr.relativeWrap.classList.remove('d-none');
+                if(sr.ruleType.value==='range'){ sr.rangeWrap.classList.remove('d-none'); srUpdateRangeInfo(); }
+              });
+              sr.preset.addEventListener('change', ()=>{ if(!sr.preset.value)return; const [f,t]=sr.preset.value.split('-'); sr.timeFrom.value=f; sr.timeTo.value=t; });
+              sr.swap.addEventListener('click', ()=>{ const f=sr.timeFrom.value, t=sr.timeTo.value; sr.timeFrom.value=t; sr.timeTo.value=f; });
+              sr.quick.addEventListener('click', e=>{ const b=e.target.closest('button[data-range]'); if(!b)return; const [f,t]=b.getAttribute('data-range').split('-'); sr.timeFrom.value=f; sr.timeTo.value=t; });
+              sr.addBtn.addEventListener('click', ()=>{
+                const f=sr.timeFrom.value, t=sr.timeTo.value; if(!f||!t){ alert('Укажите время'); return; } if(f>=t){ alert('Начало >= конца'); return; }
+                if(sr.ruleType.value==='range'){
+                  if(!sr.rangeStart.value){ alert('Дата начала'); return; }
+                  const days=parseInt(sr.rangeDays.value||'1',10); const startDate=new Date(sr.rangeStart.value);
+                  for(let i=0;i<days;i++){ const d=new Date(startDate.getTime()+i*86400000).toISOString().slice(0,10); sr.rules.push(`${d} ${f}-${t}`); }
+                  srSync(); srRender(); return;
+                }
+                let prefix='';
+                if(sr.ruleType.value==='weekday') prefix=sr.weekday.value;
+                else if(sr.ruleType.value==='date') prefix=sr.dateVal.value;
+                else if(sr.ruleType.value==='relative') prefix=sr.relativeVal.value;
+                if(!prefix){ alert('Заполните выбранный тип'); return; }
+                sr.rules.push(`${prefix} ${f}-${t}`); srSync(); srRender();
+              });
+              srRender();
+              </script>
         {% endfor %}
       </tbody>
     </table>
