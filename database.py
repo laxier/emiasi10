@@ -195,9 +195,131 @@ class ServiceShiftTask(Base):
     last_status = Column(String, nullable=True)
     last_result = Column(String, nullable=True)            # Текст/JSON итог
     last_run_at = Column(DateTime, nullable=True)
+    # Новые поля отбора:
+    week_days = Column(JSON, nullable=True)                # Список номеров дней недели [0..6] (UTC локальная логика)
+    exact_dates = Column(JSON, nullable=True)              # Список дат 'YYYY-MM-DD'
+    mode = Column(String, nullable=True, default='shift')  # 'shift' | 'create' | 'auto'
 
     def __repr__(self):
-        return f"<ServiceShiftTask(id={self.id}, user={self.telegram_user_id}, type={self.service_type}, lpu='{self.lpu_substring}')>"
+        return f"<ServiceShiftTask(id={self.id}, user={self.telegram_user_id}, type={self.service_type}, mode={self.mode}, lpu='{self.lpu_substring}')>"
+
+# ---------------------- Service Resources (LDP / Кабинеты) ----------------------
+
+class ServiceResource(Base):
+    """Отдельная сущность для ресурсов услуг (ЛДП, кабинеты ЭКГ, СМАД, Рентген и т.п.),
+    чтобы не смешивать их с реальными 'врачами' в DoctorInfo.
+
+    resource_api_id: идентификатор (doctor.id / availableResourceId) из EMIAS для услуги
+    name: стабильное имя кабинета (стараемся не перезаписывать на менее информативное)
+    complex_resource_id: complexResource.id
+    speciality_id/name: код и имя специализации услуги (например 600020 ЭКГ)
+    resource_type: строка вида 'ldp' | 'service' | 'cabinet'
+    """
+    __tablename__ = 'service_resources'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    resource_api_id = Column(String, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    complex_resource_id = Column(String, nullable=True)
+    speciality_id = Column(String, nullable=True)
+    speciality_name = Column(String, nullable=True)
+    resource_type = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<ServiceResource(id={self.id}, res={self.resource_api_id}, name={self.name}, spec={self.speciality_id})>"
+
+# Набор кодов специализаций относящихся к услугам/кабинетам (можно расширять)
+SERVICE_SPECIALITY_CODES = {
+    '600034',  # СМАД
+    '600020',  # ЭКГ
+    '599621',  # Рентгенография (пример)
+}
+
+def _should_update_service_name(old: str | None, new: str | None) -> bool:
+    """Правило обновления имени для ServiceResource.
+    Похож на докторский, но дополнительно защищаем 'КАБИНЕТ', 'СМАД', 'ЭКГ', номера.
+    """
+    if not new:
+        return False
+    if not old:
+        return True
+    import re
+    old_up = old.upper()
+    new_up = new.upper()
+    critical_tokens = ['СМАД', 'ЭКГ', 'КАБИНЕТ', 'РЕНТГЕН']
+    has_old_digits = bool(re.search(r"\d+", old))
+    has_new_digits = bool(re.search(r"\d+", new))
+    # Если старое содержит маркеры, а новое нет — не обновляем
+    if any(tok in old_up for tok in critical_tokens) and not any(tok in new_up for tok in critical_tokens):
+        return False
+    # Если старое имело номер, а новое нет номера — не обновляем
+    if has_old_digits and not has_new_digits:
+        return False
+    # Если новое значительно короче
+    if len(new) < 8 and len(old) >= 8:
+        return False
+    return True
+
+def save_or_update_service_resource(session, telegram_user_id: int, data: dict) -> ServiceResource:
+    """Сохраняет/обновляет ServiceResource из сырого блока EMIAS (doctor-like dict).
+    Вызывается из save_or_update_doctor, когда определили что это услуга.
+    """
+    resource_api_id = str(data.get('id'))
+    name = data.get('name') or 'Неизвестный кабинет'
+
+    complex_resource_list = data.get('complexResource', [])
+    complex_resource_id = None
+    if complex_resource_list and isinstance(complex_resource_list, list):
+        complex_resource_id = str(complex_resource_list[0].get('id'))
+
+    # Определяем спецкод
+    spec_id = None
+    spec_name = None
+    if data.get('arSpecialityId') is not None:
+        spec_id = str(data.get('arSpecialityId'))
+        spec_name = data.get('arSpecialityName')
+    else:
+        ldp_types = data.get('ldpType', [])
+        if ldp_types:
+            first_ldp = ldp_types[0] or {}
+            spec_id = str(first_ldp.get('code')) if first_ldp.get('code') is not None else None
+            spec_name = first_ldp.get('name')
+
+    res = session.query(ServiceResource).filter_by(resource_api_id=resource_api_id).first()
+    if res:
+        if _should_update_service_name(res.name, name):
+            res.name = name
+        if complex_resource_id:
+            res.complex_resource_id = complex_resource_id
+        res.speciality_id = spec_id
+        res.speciality_name = spec_name
+    else:
+        res = ServiceResource(
+            resource_api_id=resource_api_id,
+            name=name,
+            complex_resource_id=complex_resource_id,
+            speciality_id=spec_id,
+            speciality_name=spec_name,
+            resource_type='ldp' if data.get('ldpType') else 'service'
+        )
+        session.add(res)
+
+    # Гарантируем наличие Specialty (для политики направления)
+    if spec_id:
+        try:
+            spec_obj = session.query(Specialty).filter_by(code=spec_id).first()
+            if not spec_obj:
+                spec_obj = Specialty(code=spec_id, name=spec_name or spec_id, referral_policy=0 if data.get('ldpType') else 1)
+                session.add(spec_obj)
+        except Exception:
+            pass
+
+    try:
+        log_user_action(session, telegram_user_id, 'service_resource_upsert', f'id={resource_api_id} name={name} spec={spec_id}', source='system', status='info')
+    except Exception:
+        pass
+    return res
 
 
 def is_tracking_doctor(session, user_id: int, doctor_api_id: str) -> bool:
@@ -390,6 +512,21 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             first_ldp = ldp_types[0] or {}
             ar_speciality_id = str(first_ldp.get("code")) if first_ldp.get("code") is not None else None
             ar_speciality_name = first_ldp.get("name")
+
+    # Сначала проверяем: является ли это сервисным ресурсом (услуга, кабинет) — переносим в ServiceResource
+    potential_spec_code = None
+    if doctor_data.get("arSpecialityId") is not None:
+        potential_spec_code = str(doctor_data.get("arSpecialityId"))
+    else:
+        ldp_types_tmp = doctor_data.get("ldpType", [])
+        if ldp_types_tmp:
+            ft = ldp_types_tmp[0] or {}
+            if ft.get('code') is not None:
+                potential_spec_code = str(ft.get('code'))
+    if potential_spec_code and potential_spec_code in SERVICE_SPECIALITY_CODES:
+        save_or_update_service_resource(session, telegram_user_id, doctor_data)
+        # Не продолжаем как доктор – возвращаемся
+        return None
 
     # Если получили код специальности / ldpType – гарантируем наличие строки в Specialty.
     # Это позволит применять referral_policy и другие настройки и к ldpType.

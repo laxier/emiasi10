@@ -167,6 +167,9 @@ def _pick_earliest(schedule_payload: Dict[str, Any], allowed: List[TimeWindow], 
                     best = (st, en)
     return best
 
+def _time_in_allowed(st: datetime, en: datetime, allowed: List[TimeWindow], forbidden: List[TimeWindow]) -> bool:
+    return _slot_passes(allowed, forbidden, st, en)
+
 
 def shift_service_appointment(
     user_id: int,
@@ -349,37 +352,66 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
                     for comp in ar.get('complexResource', []):
                         cr_id = int(comp['id'])
                         sched = _fetch_sched(token, profile, appt_for_li, ar_id, cr_id)
-                        slot = _pick_earliest(sched, allowed, forbidden)
-                        if not slot:
-                            continue
-                        st, en = slot
-                        if best is None or st < best[3]:
-                            cab = comp.get('name') or comp.get('room', {}).get('number', '')
-                            best = (ar_id, cr_id, cab, st, en, lpu_name)
+                        # Перебираем все слоты в расписании вместо только earliest, применяем фильтры дат
+                        for day in sched.get('scheduleByDay', []):
+                            for block in day.get('scheduleBySlot', []):
+                                for s in block.get('slot', []):
+                                    st_iso = s.get('startTime') or s.get('start')
+                                    en_iso = s.get('endTime') or s.get('end')
+                                    if not st_iso or not en_iso:
+                                        continue
+                                    try:
+                                        st = datetime.fromisoformat(st_iso.replace('Z',''))
+                                        en = datetime.fromisoformat(en_iso.replace('Z',''))
+                                    except Exception:
+                                        continue
+                                    # week day filter
+                                    if task.week_days and st.weekday() not in task.week_days:
+                                        continue
+                                    # exact dates filter
+                                    if task.exact_dates and st.date().isoformat() not in task.exact_dates:
+                                        continue
+                                    if not _time_in_allowed(st, en, allowed, forbidden):
+                                        continue
+                                    if best is None or st < best[3]:
+                                        cab = comp.get('name') or comp.get('room', {}).get('number', '')
+                                        best = (ar_id, cr_id, cab, st, en, lpu_name)
             if not best:
                 task.last_status = 'no_slot'
                 task.last_run_at = now
                 continue
+            # Action decision based on mode
+            mode = (task.mode or 'shift')
+            action = None
+            if mode == 'shift':
+                action = 'shift' if task.appointment_id else None
+            elif mode == 'create':
+                action = 'create' if not task.appointment_id else 'shift'
+            else:  # auto
+                action = 'shift' if task.appointment_id else 'create'
             ar_id, cr_id, cab, st, en, lpu_name = best
-            action_kind = 'shift' if task.appointment_id else 'create'
             try:
-                if task.appointment_id:
-                    # Перенос – receptionTypeId=0 (для процедур часто не обязателен)
+                if action == 'shift' and task.appointment_id:
                     from emias_api import shift_appointment
                     resp = shift_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), int(task.appointment_id), 0)
-                else:
+                    status_code = 'shifted'
+                elif action == 'create':
                     resp = create_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), 0)
-                if resp and (resp.get('appointmentId') or (resp.get('payload') and resp['payload'].get('appointmentId'))):
-                    appt_id = resp.get('appointmentId') or (resp.get('payload') and resp['payload'].get('appointmentId'))
+                    appt_id = resp.get('appointmentId') or (resp.get('payload') and resp['payload'].get('appointmentId')) if resp else None
                     if appt_id:
                         task.appointment_id = str(appt_id)
-                    task.last_status = 'ok'
-                    task.last_result = f"{action_kind} -> {st.isoformat()} cab={cab} lpu={lpu_name}"
+                    status_code = 'created'
+                else:
+                    task.last_status = 'no_action'
+                    task.last_run_at = now
+                    continue
+                if resp:
+                    task.last_status = status_code
+                    task.last_result = f"{status_code} -> {st.isoformat()} cab={cab} lpu={lpu_name}"
                     try:
-                        log_user_action(sess, task.telegram_user_id, f'service_task_{action_kind}', task.last_result, source='system', status='success')
+                        log_user_action(sess, task.telegram_user_id, f'service_task_{status_code}', task.last_result, source='system', status='success')
                     except Exception:
                         pass
-                    # Отправим уведомление в бот (best-effort, без await если отсутствует цикл)
                     try:
                         import asyncio
                         loop = asyncio.get_event_loop()
@@ -396,10 +428,11 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
                 else:
                     task.last_status = 'api_fail'
                     task.last_result = str(resp)[:250]
+                task.last_run_at = now
             except Exception as e:
                 task.last_status = 'exception'
                 task.last_result = str(e)[:250]
-            task.last_run_at = now
+                task.last_run_at = now
         finally:
             sess.commit()
     sess.close()

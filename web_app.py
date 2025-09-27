@@ -1038,6 +1038,18 @@ def service_tasks():
                             task.referral_required = ref_flag_form
                         task.allowed_windows = _parse_time_windows(request.form.get('allowed_windows'))
                         task.forbidden_windows = _parse_time_windows(request.form.get('forbidden_windows'))
+                        # week days
+                        wd_raw = request.form.getlist('week_days')
+                        task.week_days = [int(x) for x in wd_raw if x.isdigit()] or None
+                        # exact dates
+                        ed_raw = request.form.get('exact_dates','')
+                        dates = []
+                        for part in ed_raw.split(','):
+                            p = part.strip()
+                            if len(p)==10 and p[4]=='-' and p[7]=='-':
+                                dates.append(p)
+                        task.exact_dates = dates or None
+                        task.mode = request.form.get('mode', task.mode or 'shift')
                         log_user_action(sess, user_id, 'service_task_update', f'task={task.id}', source='web', status='success')
                     sess.commit()
             else:  # create
@@ -1055,6 +1067,16 @@ def service_tasks():
                                 ref_required = True
                             elif spec_obj.referral_policy == 2:
                                 ref_required = False
+                    # week days
+                    wd_raw = request.form.getlist('week_days')
+                    week_days = [int(x) for x in wd_raw if x.isdigit()] or None
+                    # exact dates
+                    ed_raw = request.form.get('exact_dates','')
+                    dates = []
+                    for part in ed_raw.split(','):
+                        p = part.strip()
+                        if len(p)==10 and p[4]=='-' and p[7]=='-':
+                            dates.append(p)
                     task = ServiceShiftTask(
                         telegram_user_id=user_id,
                         service_type=service_type,
@@ -1062,6 +1084,9 @@ def service_tasks():
                         referral_required=ref_required,
                         allowed_windows=_parse_time_windows(request.form.get('allowed_windows')),
                         forbidden_windows=_parse_time_windows(request.form.get('forbidden_windows')),
+                        week_days=week_days,
+                        exact_dates=dates or None,
+                        mode=request.form.get('mode','shift')
                     )
                     sess.add(task)
                     sess.commit()
