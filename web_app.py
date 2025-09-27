@@ -1043,7 +1043,13 @@ def service_tasks():
                     log_user_action(sess, user_id, 'service_task_create', f'task={task.id} type={service_type}', source='web', status='success')
         tasks = sess.query(ServiceShiftTask).filter_by(telegram_user_id=user_id).order_by(ServiceShiftTask.id.desc()).all()
         # Предлагаем список LDP специальностей для выбора как service_type (код)
-        ldp_specs = sess.query(Specialty).order_by(Specialty.code.asc()).all()
+        from database import SERVICE_SPECIALITY_CODES as _SVC_CODES
+        ldp_specs = (
+            sess.query(Specialty)
+            .filter(Specialty.code.in_(list(_SVC_CODES)))
+            .order_by(Specialty.code.asc())
+            .all()
+        )
     finally:
         sess.close()
     return render_template('service_tasks.html', tasks=tasks, ldp_specs=ldp_specs)
