@@ -14,7 +14,9 @@ from database import (
     save_tokens,
     Specialty,
     UserDoctorLink,
-    ServiceShiftTask
+    ServiceShiftTask,
+    ServiceResource,
+    SERVICE_SPECIALITY_CODES
 )
 from emias_api import get_whoami, get_assignments_referrals_info, get_available_resource_schedule_info
 import json, datetime as dt
@@ -187,8 +189,9 @@ def admin_dashboard():
     session_db = get_db_session()
     users = session_db.query(UserProfile).all()
     doctors = session_db.query(DoctorInfo).all()
+    service_count = session_db.query(ServiceResource).count()
     session_db.close()
-    return render_template('admin_dashboard.html', users=users, doctors=doctors, models=ADMIN_MODELS)
+    return render_template('admin_dashboard.html', users=users, doctors=doctors, models=ADMIN_MODELS, service_count=service_count, SERVICE_SPECIALITY_CODES=SERVICE_SPECIALITY_CODES)
 
 
 def _get_ldp_specialty_codes(sess):
@@ -224,6 +227,22 @@ def admin_bulk():
                 flash(f'Обновлено LDP специальностей: {updated} (policy={policy})', 'success')
                 try:
                     log_user_action(sess, session.get('user_id'), 'admin_bulk', f'set_ldp_policy policy={policy} updated={updated}', source='web', status='info')
+                except Exception:
+                    pass
+        elif action == 'set_service_policy':
+            try:
+                policy = int(request.form.get('policy', 1))
+            except Exception:
+                policy = 1
+            codes = list(SERVICE_SPECIALITY_CODES)
+            if not codes:
+                flash('SERVICE_SPECIALITY_CODES пуст', 'warning')
+            else:
+                updated = sess.query(Specialty).filter(Specialty.code.in_(codes)).update({'referral_policy': policy}, synchronize_session=False)
+                sess.commit()
+                flash(f'Обновлено сервисных спец: {updated} policy={policy}', 'success')
+                try:
+                    log_user_action(sess, session.get('user_id'), 'admin_bulk', f'set_service_policy policy={policy} updated={updated}', source='web', status='info')
                 except Exception:
                     pass
         elif action == 'trim_logs':
@@ -305,11 +324,19 @@ ADMIN_MODELS = {
     },
     'doctor': {
         'model': DoctorInfo,
-        'title': 'Врачи/Ресурсы',
+        'title': 'Врачи',
         'editable': ['name','ar_speciality_id','ar_speciality_name','complex_resource_id'],
         'create': False,
         'delete': False,
         'order_by': 'doctor_api_id'
+    },
+    'service_resource': {
+        'model': ServiceResource,
+        'title': 'Кабинеты / Услуги',
+        'editable': ['name','speciality_id','speciality_name','complex_resource_id','resource_type'],
+        'create': False,
+        'delete': False,
+        'order_by': 'resource_api_id'
     },
     'tracked': {
         'model': UserTrackedDoctor,
