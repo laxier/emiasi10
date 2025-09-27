@@ -460,8 +460,8 @@ def admin_model_edit(model_key, obj_id):
             log_user_action(session_db, session.get('user_id'), 'admin_edit', f'{model_key}#{obj_id} поля: {",".join(changed_fields)}', source='web', status='info')
         except Exception:
             pass
-        session_db.close()
-        return redirect(url_for('admin_dashboard'))
+    session_db.close()
+    return redirect(url_for('admin_model_list', model_key=model_key))
     # For display we just pass object
     session_db.close()
     return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj)
