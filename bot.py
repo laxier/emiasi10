@@ -2626,9 +2626,9 @@ async def check_schedule_updates():
                                             named = siblings_disabled[:25]
                                         if named:
                                             preview_list = ', '.join(named[:6]) + (' …' if len(named) > 6 else '')
-                                            note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} в группе {consumed_batch[:8]}: {preview_list}")
+                                            note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} в группе: {preview_list}")
                                     except Exception:
-                                        note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} треков группы {consumed_batch[:8]}.")
+                                        note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} треков группы.")
                                 else:
                                     note_lines.append("Группа завершена (других врачей не осталось).")
                                 # Фиксируем изменения
