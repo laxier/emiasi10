@@ -24,6 +24,13 @@
               {% endfor %}
             </datalist>
             <div class="form-text">Нажми лупу чтобы искать по подстроке (например: "гп 115"), затем выбери строку.</div>
+            {% if addresses_payload|length == 0 %}
+              <div class="alert alert-warning mt-2 py-2 px-3 small mb-2" id="addrEmptyMsg">
+                Адресов нет (таблица LPUAddress пуста или не загрузилась). <button type="button" class="btn btn-sm btn-outline-primary ms-2" id="addrReloadBtn">Обновить</button>
+              </div>
+            {% else %}
+              <div class="small text-muted mt-1">Всего адресов: {{ addresses_payload|length }}</div>
+            {% endif %}
 
             <!-- Modal -->
             <div class="modal fade" id="addressSearchModal" tabindex="-1" aria-hidden="true">
@@ -103,6 +110,9 @@
                   setTimeout(()=> searchInput?.focus(), 300);
                 });
                 clearBtn?.addEventListener('click', () => { input.value=''; });
+                // Кнопка обновить при пустом списке: просто перезагрузка страницы (можно позже сделать fetch)
+                const reloadBtn = document.getElementById('addrReloadBtn');
+                reloadBtn?.addEventListener('click', () => { window.location.reload(); });
                 searchInput?.addEventListener('input', e => {
                   render(e.target.value);
                 });

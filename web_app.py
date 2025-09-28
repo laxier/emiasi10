@@ -790,7 +790,16 @@ def admin_model_edit(model_key, obj_id):
         try:
             from database import LPUAddress
             # Берём все адреса (при большом количестве можно добавить пагинацию/фильтр)
-            addresses = session_db.query(LPUAddress).order_by(LPUAddress.short_name.asc().nullsLast()).all()
+            # Убрали .nullsLast() — в SQLite/SQLAlchemy может падать; сортируем простым order_by(short_name, address_point_id)
+            try:
+                addresses = session_db.query(LPUAddress).order_by(LPUAddress.short_name.asc(), LPUAddress.address_point_id.asc()).all()
+            except Exception:
+                addresses = session_db.query(LPUAddress).all()
+            # Лёгкое диагностическое сообщение в stdout (fallback логирование количества адресов)
+            try:
+                print(f"[admin_model_edit] loaded addresses count={len(addresses)}")
+            except Exception:
+                pass
             for a in addresses:
                 try:
                     addresses_payload.append({
