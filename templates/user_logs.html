@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+
+{% block title %}Логи пользователя{% endblock %}
+
+{% block nav_links %}
+    <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+{% endblock %}
+
+{% block content %}
+        <h1 class="d-flex justify-content-between align-items-center"><span><i class="fas fa-history"></i> Логи действий</span>
+            <small class="text-muted ms-2">Всего: {{ total_count if total_count is defined else logs|length }}</small></h1>
+        <style>
+            /* Новый стиль подсветки выбранных строк */
+            tr.selected-log, tr.selected-log td {
+                background: linear-gradient(90deg, rgba(13,110,253,0.18), rgba(13,110,253,0.07)) !important;
+                transition: background .12s ease;
+            }
+            /* Цветовая адаптация для error/warning, оставляем семантику но добавляем оттенок */
+            tr.selected-log.table-danger, tr.selected-log.table-danger td {
+                background: linear-gradient(90deg, rgba(220,53,69,0.30), rgba(220,53,69,0.10)) !important;
+            }
+            tr.selected-log.table-warning, tr.selected-log.table-warning td {
+                background: linear-gradient(90deg, rgba(255,193,7,0.40), rgba(255,193,7,0.15)) !important;
+            }
+            /* Левая цветная полоса как маркер выбора */
+            tr.selected-log td:first-child {
+                box-shadow: inset 4px 0 0 #0d6efd;
+            }
+            tr.selected-log.table-danger td:first-child { box-shadow: inset 4px 0 0 #dc3545; }
+            tr.selected-log.table-warning td:first-child { box-shadow: inset 4px 0 0 #ffc107; }
+            /* Снимаем влияние зебры Bootstrap для выбранной */
+            tbody tr.selected-log:nth-of-type(odd) { --bs-table-accent-bg: transparent; }
+        </style>
+        <form method="POST" action="{{ url_for('delete_user_logs') }}" id="deleteForm">
+            <div class="row g-2 mb-2">
+                <div class="col-md-6">
+                    <input type="text" id="searchInput" class="form-control" placeholder="Поиск по действию или деталям...">
+                </div>
+                <div class="col-md-6 text-end">
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-secondary" id="selectAllBtn">Выделить все</button>
+                        <button type="button" class="btn btn-outline-secondary" id="clearSelectionBtn">Снять выделение</button>
+                        <button type="submit" class="btn btn-outline-danger" name="delete_selected" value="1" onclick="return confirm('Удалить выбранные записи?')">Удалить выбранные</button>
+                        <button type="submit" class="btn btn-danger" name="delete_all" value="1" onclick="return confirm('Точно удалить ВСЕ логи?')">Удалить все</button>
+                        <input type="hidden" name="delete_all" id="deleteAllHidden">
+                    </div>
+                </div>
+            </div>
+        
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <div>
+                {% if not show_all %}
+                    <span class="badge bg-secondary">Стр: {{ page }}/{{ total_pages }}</span>
+                    <span class="badge bg-info text-dark">По {{ page_size }} шт</span>
+                {% else %}
+                    <span class="badge bg-primary">Все записи</span>
+                {% endif %}
+            </div>
+            <div class="btn-group btn-group-sm" role="group">
+                {% if not show_all %}
+                    <a class="btn btn-outline-secondary {% if page<=1 %}disabled{% endif %}" href="{{ url_for('user_logs', page=1) }}">«</a>
+                    <a class="btn btn-outline-secondary {% if page<=1 %}disabled{% endif %}" href="{{ url_for('user_logs', page=page-1) }}">‹</a>
+                    <a class="btn btn-outline-secondary {% if page>=total_pages %}disabled{% endif %}" href="{{ url_for('user_logs', page=page+1) }}">›</a>
+                    <a class="btn btn-outline-secondary {% if page>=total_pages %}disabled{% endif %}" href="{{ url_for('user_logs', page=total_pages) }}">»</a>
+                    <a class="btn btn-outline-primary" href="{{ url_for('user_logs', all=1) }}">Все</a>
+                {% else %}
+                    <a class="btn btn-outline-secondary" href="{{ url_for('user_logs') }}">Пагинация</a>
+                {% endif %}
+            </div>
+        </div>
+        <table class="table table-striped table-sm align-middle" id="logsTable">
+            <thead>
+                <tr>
+                    <th style="width:30px;"><input type="checkbox" id="masterCheck"></th>
+                    <th style="width:260px;">Метка / время</th>
+                    <th>Действие</th>
+                    <th>Детали</th>
+                </tr>
+            </thead>
+            <tbody id="logsTableBody">
+                {% for log in logs %}
+                    <tr class="log-row {% if log.status in ['error','fail'] %}table-danger{% elif log.status == 'warning' %}table-warning{% endif %}" data-log-id="{{ log.id }}">
+                        <td><input type="checkbox" name="log_ids" value="{{ log.id }}" class="log-check" data-log-id="{{ log.id }}"></td>
+                        <td class="font-monospace">
+                            {% set st = log.status if log.status else 'info' %}
+                            {% if st in ['fail'] %}{% set st = 'error' %}{% endif %}
+                            {% if st == 'success' %}{% set st = 'success' %}{% elif st == 'warning' %}{% set st = 'warn' %}{% elif st in ['error','fail'] %}{% set st = 'error' %}{% elif st == 'info' %}{% set st = 'info' %}{% endif %}
+                            {% set src = log.source if log.source else '?' %}
+                            [{{ st|upper }} {{ src|upper }}] {{ log.pretty_time if log.pretty_time is defined and log.pretty_time else log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+                        </td>
+                        <td>{{ log.action }}</td>
+                        <td class="text-break small">{{ log.details or '' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </form>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Helpers
+        const logChecks = () => Array.from(document.querySelectorAll('.log-check'));
+        function updateRowHighlight(cb){
+            const row = cb.closest('tr');
+            if(!row) return;
+            if(cb.checked){
+                row.classList.add('selected-log');
+            } else {
+                row.classList.remove('selected-log');
+            }
+        }
+        function updateAllHighlights(){ logChecks().forEach(updateRowHighlight); }
+
+        // Existing search filter (после фильтра корректируем shift диапазон на видимые)
+        document.getElementById('searchInput').addEventListener('keyup', function() {
+            const filter = this.value.toLowerCase();
+            const rows = document.querySelectorAll('#logsTableBody tr');
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(filter) ? '' : 'none';
+            });
+            // Сброс lastChecked если он теперь невидим
+            if(lastChecked && lastChecked.closest('tr').style.display === 'none') {
+                lastChecked = null;
+            }
+        });
+
+        // Master checkbox
+        const master = document.getElementById('masterCheck');
+        if (master) {
+            master.addEventListener('change', () => {
+                const checked = master.checked;
+                logChecks().forEach(cb => { if (!cb.disabled) cb.checked = checked; });
+                updateAllHighlights();
+            });
+        }
+        document.getElementById('selectAllBtn').addEventListener('click', () => {
+            logChecks().forEach(cb => cb.checked = true);
+            updateAllHighlights();
+        });
+        document.getElementById('clearSelectionBtn').addEventListener('click', () => {
+            logChecks().forEach(cb => cb.checked = false);
+            if (master) master.checked = false;
+            updateAllHighlights();
+        });
+        // Intercept delete all button to set hidden flag
+        const form = document.getElementById('deleteForm');
+        form.addEventListener('submit', (e) => {
+            if (document.activeElement && document.activeElement.name === 'delete_all') {
+                document.getElementById('deleteAllHidden').value = '1';
+            } else {
+                document.getElementById('deleteAllHidden').value = '';
+            }
+        });
+
+        // --- Shift выделение диапазона (чекбоксы И клик по строке) ---
+        let lastChecked = null;
+        function applyShiftRange(currentCb, shiftKey, explicitToggle){
+            if(!shiftKey || !lastChecked || lastChecked === currentCb){
+                // Обычное поведение
+                if(explicitToggle){
+                    currentCb.checked = !currentCb.checked; // row click toggled
+                }
+                updateRowHighlight(currentCb);
+                lastChecked = currentCb;
+                return;
+            }
+            // Диапазон по видимым
+            const boxes = logChecks().filter(b => b.closest('tr').style.display !== 'none');
+            const start = boxes.indexOf(currentCb);
+            const end = boxes.indexOf(lastChecked);
+            if(start === -1 || end === -1){
+                // fallback: просто применим текущее
+                updateRowHighlight(currentCb);
+                lastChecked = currentCb;
+                return;
+            }
+            const [min,max] = start < end ? [start,end] : [end,start];
+            const targetState = currentCb.checked || explicitToggle; // если текущий после клика включен — включаем диапазон
+            for(let i=min;i<=max;i++){
+                boxes[i].checked = targetState;
+                updateRowHighlight(boxes[i]);
+            }
+            lastChecked = currentCb;
+        }
+
+        // Слушатели на чекбоксах
+        logChecks().forEach(cb => {
+            cb.addEventListener('click', (e) => {
+                applyShiftRange(cb, e.shiftKey, false);
+            });
+        });
+
+        // Клик по строке (включая Shift)
+        document.querySelectorAll('tr.log-row').forEach(row => {
+            row.addEventListener('click', (e) => {
+                const cb = row.querySelector('.log-check');
+                if(!cb) return;
+                if(e.target.classList.contains('log-check')) return; // уже обработано
+                // При row-click для согласованности перед изменением сохраним текущее состояние
+                cb.checked = !cb.checked;
+                applyShiftRange(cb, e.shiftKey, false); // cb уже переключён
+            });
+        });
+
+        // Начальная подсветка если что-то было отмечено сервером (редко, но на всякий)
+        updateAllHighlights();
+    </script>
+{% endblock %}

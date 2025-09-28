@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+
+{% block title %}Редактировать отслеживание{% endblock %}
+
+{% block nav_links %}
+    <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+{% endblock %}
+
+{% block content %}
+    <div class="container mt-4">
+        <h1><i class="fas fa-edit"></i> Редактировать правила отслеживания для врача {{ doctor.name if doctor else track.doctor_api_id }}</h1>
+        <form method="post">
+            <div class="mb-3">
+                <label class="form-label">Расписание (сохранённое)</label>
+                {% include 'partials/_doctor_schedule_preview.html' %}
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Правила отслеживания</label>
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label small mb-1">Тип</label>
+                        <select id="ruleType" class="form-select">
+                            <option value="weekday">День недели</option>
+                            <option value="date">Конкретная дата</option>
+                            <option value="relative">Относительно (сегодня/завтра)</option>
+                            <option value="range">Диапазон дат</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3" id="weekdayWrapper">
+                        <label class="form-label small mb-1">День</label>
+                        <select id="weekday" class="form-select">
+                            <option value="понедельник">Понедельник</option>
+                            <option value="вторник">Вторник</option>
+                            <option value="среда">Среда</option>
+                            <option value="четверг">Четверг</option>
+                            <option value="пятница">Пятница</option>
+                            <option value="суббота">Суббота</option>
+                            <option value="воскресенье">Воскресенье</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3 d-none" id="dateWrapper">
+                        <label class="form-label small mb-1">Дата</label>
+                        <input type="date" id="dateValue" class="form-control" />
+                    </div>
+                    <div class="col-md-3 d-none" id="relativeWrapper">
+                        <label class="form-label small mb-1">Относительно</label>
+                        <select id="relativeValue" class="form-select">
+                            <option value="сегодня">Сегодня</option>
+                            <option value="завтра">Завтра</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4 d-none" id="rangeWrapper">
+                        <label class="form-label small mb-1">Диапазон дат</label>
+                        <div class="d-flex flex-column gap-1">
+                            <div class="input-group input-group-sm">
+                                <span class="input-group-text">От</span>
+                                <input type="date" id="rangeStart" class="form-control" />
+                            </div>
+                            <div class="input-group input-group-sm align-items-center">
+                                <span class="input-group-text">Дней</span>
+                                <input type="range" id="rangeDays" min="1" max="30" value="1" class="form-range" style="width:100%;" />
+                            </div>
+                            <div class="small text-muted" id="rangeInfo">Выберите дату начала</div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label small mb-1">Время</label>
+                        <div class="d-flex flex-column gap-1">
+                            <div class="d-flex gap-2">
+                                <select id="presetRange" class="form-select form-select-sm">
+                                    <option value="">Свое...</option>
+                                    <option value="08:00-12:00">08:00-12:00</option>
+                                    <option value="09:00-13:00">09:00-13:00</option>
+                                    <option value="10:00-14:00">10:00-14:00</option>
+                                    <option value="14:00-18:00">14:00-18:00</option>
+                                    <option value="15:00-19:00">15:00-19:00</option>
+                                </select>
+                                <button type="button" id="swapBtn" class="btn btn-outline-secondary btn-sm" title="Поменять местами">⇄</button>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <input type="time" id="timeFrom" class="form-control form-control-sm" value="09:00" />
+                                <span class="small">-</span>
+                                <input type="time" id="timeTo" class="form-control form-control-sm" value="13:00" />
+                            </div>
+                            <div class="d-flex flex-wrap gap-1 small" id="quickRangeButtons">
+                                <button type="button" class="btn btn-outline-primary btn-sm" data-range="08:00-11:00">08-11</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" data-range="11:00-14:00">11-14</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" data-range="12:00-16:00">12-16</button>
+                                <button type="button" class="btn btn-outline-primary btn-sm" data-range="16:00-20:00">16-20</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-2">
+                        <button type="button" id="addRuleBtn" class="btn btn-success w-100"><i class="fas fa-plus"></i> Правило</button>
+                    </div>
+                </div>
+                <input type="hidden" name="rules" id="rulesInput" value="{{ rules | join(',') }}" />
+                <div id="rulesList" class="mt-3"></div>
+                <div class="mt-2 small" id="coverageHint"></div>
+                <small class="text-muted">Примеры: понедельник 08:00-12:00, сегодня 10:00-14:00, 2025-10-01 09:00-11:00</small>
+            </div>
+            <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Сохранить</button>
+        </form>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const existingRulesRaw = document.getElementById('rulesInput').value.trim();
+    let rules = existingRulesRaw ? existingRulesRaw.split(',').map(r=>r.trim()).filter(r=>r.length>0) : [];
+    const ruleType = document.getElementById('ruleType');
+    const weekdayWrapper = document.getElementById('weekdayWrapper');
+    const dateWrapper = document.getElementById('dateWrapper');
+    const relativeWrapper = document.getElementById('relativeWrapper');
+    const weekday = document.getElementById('weekday');
+    const dateValue = document.getElementById('dateValue');
+    const relativeValue = document.getElementById('relativeValue');
+    const timeFrom = document.getElementById('timeFrom');
+    const timeTo = document.getElementById('timeTo');
+    const presetRange = document.getElementById('presetRange');
+    const swapBtn = document.getElementById('swapBtn');
+    const quickRangeButtons = document.getElementById('quickRangeButtons');
+    const addRuleBtn = document.getElementById('addRuleBtn');
+    const rulesList = document.getElementById('rulesList');
+    const rulesInput = document.getElementById('rulesInput');
+    const coverageHint = document.getElementById('coverageHint');
+
+    // Extract slots from schedule table for coverage (date -> [times])
+    const scheduleData = [];
+    document.querySelectorAll('.doctor-schedule-preview tbody tr').forEach(tr => {
+        const tds = tr.querySelectorAll('td');
+        if (tds.length < 4) return; // date, weekday, coverage badge, slots
+        const dateText = tds[0].innerText.trim(); // dd.mm
+        const slotsBadges = tds[3].querySelectorAll('.badge');
+        const slots = Array.from(slotsBadges).map(b=>b.innerText.trim()).filter(x=>/^[0-2]\d:[0-5]\d$/.test(x));
+        scheduleData.push({date: dateText, slots});
+    });
+
+    function normalizeRule(r){
+        const m = r.match(/^(.+?)\s(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+        if(!m) return null; return {prefix:m[1].toLowerCase(), from:m[2], to:m[3]};
+    }
+    function timeToMin(t){return parseInt(t.slice(0,2))*60+parseInt(t.slice(3,5));}
+    function coveredByRule(slot, rule){
+        const m = slot.match(/^(\d{2}:\d{2})$/); if(!m) return false; const mins=timeToMin(m[1]);
+        return mins>=timeToMin(rule.from) && mins<timeToMin(rule.to);
+    }
+    function ruleAppliesToDate(rulePrefix, dateObj){
+        const weekdays=['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'];
+        const today=new Date(); const tomorrow=new Date(Date.now()+86400000);
+        const iso = dateObj.toISOString().slice(0,10);
+        if(rulePrefix===iso) return true;
+        if(rulePrefix===weekdays[dateObj.getDay()===0?6:dateObj.getDay()-1]) return true;
+        if(rulePrefix==='сегодня' && dateObj.toDateString()===today.toDateString()) return true;
+        if(rulePrefix==='завтра' && dateObj.toDateString()===tomorrow.toDateString()) return true;
+        return false;
+    }
+    function recomputeCoverage(){
+        const todayYear = new Date().getFullYear();
+        const parsedRules = rules.map(normalizeRule).filter(Boolean);
+        let full=0, partial=0, none=0;
+        scheduleData.forEach(d=>{
+            const [day,month] = d.date.split('.').map(Number);
+            let dateObj; try { dateObj = new Date(todayYear, month-1, day); } catch(e){return;}
+            const applicable = parsedRules.filter(r=>ruleAppliesToDate(r.prefix,dateObj));
+            if(!d.slots.length){ none++; return; }
+            if(applicable.length===0){ none++; return; }
+            let total = d.slots.length; let covered=0;
+            d.slots.forEach(s=>{ if(applicable.some(r=>coveredByRule(s,r))) covered++; });
+            if(covered===0) none++; else if(covered===total) full++; else partial++;
+        });
+        coverageHint.innerHTML = `Coverage: FULL ${full} | PART ${partial} | NONE ${none}`;
+    }
+    function onRulesChanged(){ syncRulesInput(); renderRules(); recomputeCoverage(); }
+    function syncRulesInput() { rulesInput.value = rules.join(','); }
+    // override existing calls
+    const originalRender = renderRules;
+    renderRules = function(){ originalRender(); recomputeCoverage(); };
+
+    function syncRulesInput() { rulesInput.value = rules.join(','); }
+    function renderRules() {
+        rulesList.innerHTML = '';
+        if (rules.length === 0) { rulesList.innerHTML = '<div class="text-muted">Правил пока нет.</div>'; return; }
+        rules.forEach((r, idx) => {
+            const badge = document.createElement('div');
+            badge.className = 'alert alert-secondary py-1 px-2 d-flex justify-content-between align-items-center';
+            badge.style.fontSize = '0.9rem';
+            badge.innerHTML = `<span>${r}</span><div><button type="button" class="btn btn-sm btn-outline-primary me-1" data-edit="${idx}"><i class="fas fa-pen"></i></button><button type="button" class="btn btn-sm btn-outline-danger" data-idx="${idx}"><i class="fas fa-times"></i></button></div>`;
+            rulesList.appendChild(badge);
+        });
+    }
+    rulesList.addEventListener('click', e => {
+        if (e.target.closest('button[data-idx]')) {
+            const idx = e.target.closest('button').getAttribute('data-idx');
+            rules.splice(idx,1); onRulesChanged();
+        } else if (e.target.closest('button[data-edit]')) {
+            const idx = e.target.closest('button').getAttribute('data-edit');
+            const val = rules[idx];
+            // very simple parser: prefix + timeFrom-timeTo
+            const parts = val.split(' ');
+            const timePart = parts.pop();
+            const prefix = parts.join(' ');
+            const times = timePart.split('-');
+            if (times.length===2) { timeFrom.value = times[0]; timeTo.value = times[1]; }
+            if (['сегодня','завтра'].includes(prefix)) { ruleType.value='relative'; relativeWrapper.classList.remove('d-none'); dateWrapper.classList.add('d-none'); weekdayWrapper.classList.add('d-none'); relativeValue.value=prefix; }
+            else if (/^\d{4}-\d{2}-\d{2}$/.test(prefix)) { ruleType.value='date'; dateWrapper.classList.remove('d-none'); relativeWrapper.classList.add('d-none'); weekdayWrapper.classList.add('d-none'); dateValue.value=prefix; }
+            else { ruleType.value='weekday'; weekdayWrapper.classList.remove('d-none'); dateWrapper.classList.add('d-none'); relativeWrapper.classList.add('d-none'); weekday.value=prefix; }
+            rules.splice(idx,1); onRulesChanged();
+        }
+    });
+    const rangeWrapper = document.getElementById('rangeWrapper');
+    const rangeStart = document.getElementById('rangeStart');
+    const rangeDays = document.getElementById('rangeDays');
+    const rangeInfo = document.getElementById('rangeInfo');
+    function updateRangeInfo(){
+        const start = rangeStart.value;
+        const days = parseInt(rangeDays.value,10);
+        if(!start){ rangeInfo.textContent='Выберите дату начала'; return; }
+        const startDate = new Date(start);
+        const endDate = new Date(startDate.getTime() + (days-1)*86400000);
+        rangeInfo.textContent = `До: ${endDate.toISOString().slice(0,10)} (всего ${days} дн.)`;
+    }
+    rangeStart?.addEventListener('change', updateRangeInfo);
+    rangeDays?.addEventListener('input', updateRangeInfo);
+
+    ruleType.addEventListener('change', () => {
+        weekdayWrapper.classList.add('d-none'); dateWrapper.classList.add('d-none'); relativeWrapper.classList.add('d-none'); rangeWrapper.classList.add('d-none');
+        if (ruleType.value==='weekday') weekdayWrapper.classList.remove('d-none');
+        if (ruleType.value==='date') dateWrapper.classList.remove('d-none');
+        if (ruleType.value==='relative') relativeWrapper.classList.remove('d-none');
+        if (ruleType.value==='range') { rangeWrapper.classList.remove('d-none'); updateRangeInfo(); }
+    });
+    addRuleBtn.addEventListener('click', () => {
+        const from=timeFrom.value, to=timeTo.value; if(!from||!to){alert('Укажите время');return;} if(from>=to){alert('Начало < конец');return;}
+        if (ruleType.value==='range') {
+            if(!rangeStart.value){ alert('Выберите дату начала'); return; }
+            const days=parseInt(rangeDays.value,10); if(days<1){ alert('Неверная длина'); return; }
+            const startDate=new Date(rangeStart.value);
+            for(let i=0;i<days;i++){ const d=new Date(startDate.getTime()+i*86400000); rules.push(`${d.toISOString().slice(0,10)} ${from}-${to}`); }
+            onRulesChanged(); return; }
+        let prefix=''; if(ruleType.value==='weekday') prefix=weekday.value; else if(ruleType.value==='date') prefix=dateValue.value; else if(ruleType.value==='relative') prefix=relativeValue.value; if(!prefix){alert('Заполните выбранный тип');return;}
+        rules.push(`${prefix} ${from}-${to}`); onRulesChanged();
+    });
+    renderRules();
+    presetRange.addEventListener('change', () => { if(!presetRange.value) return; const [f,t]=presetRange.value.split('-'); timeFrom.value=f; timeTo.value=t; });
+    swapBtn.addEventListener('click', () => { const f=timeFrom.value, t=timeTo.value; timeFrom.value=t; timeTo.value=f; });
+    quickRangeButtons.addEventListener('click', e => { const btn=e.target.closest('button[data-range]'); if(!btn)return; const [f,t]=btn.getAttribute('data-range').split('-'); timeFrom.value=f; timeTo.value=t; });
+</script>
+{% endblock %}

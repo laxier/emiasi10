@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Добавить в избранное</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="#">EMIAS Bot</a>
+            <div class="navbar-nav ms-auto">
+                <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+                <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container mt-4">
+        <h1><i class="fas fa-star"></i> Добавить врача в избранное</h1>
+        <form method="post">
+            <div class="mb-3">
+                <label for="doctor_id" class="form-label">Врач</label>
+                <input type="text" id="doctorSearch" class="form-control mb-2" placeholder="Начните вводить имя врача для поиска...">
+                <select id="doctor_id" name="doctor_id" class="form-control" required>
+                    <option value="">Выберите врача</option>
+                    {% for doctor in doctors %}
+                        <option value="{{ doctor.doctor_api_id }}">{{ doctor.name }} ({{ doctor.ar_speciality_name }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Добавить</button>
+        </form>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('doctorSearch').addEventListener('keyup', function() {
+            const filter = this.value.toLowerCase();
+            const options = document.querySelectorAll('#doctor_id option');
+            options.forEach(option => {
+                if (option.value === "") return; // Keep "Выберите врача"
+                const text = option.textContent.toLowerCase();
+                option.style.display = text.includes(filter) ? '' : 'none';
+            });
+        });
+    </script>
+</body>
+</html>

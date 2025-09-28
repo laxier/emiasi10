@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Календарь записей{% endblock %}
+
+{% block nav_links %}
+    <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+{% endblock %}
+
+{% block content %}
+    <div class="container mt-4">
+        <h1><i class="fas fa-calendar-alt"></i> Календарь записей и отслеживания</h1>
+        <div class="row">
+            <div class="col-md-4">
+                <h2>Врачи</h2>
+                <div class="mb-3">
+                    <input type="text" id="doctorSearch" class="form-control" placeholder="Поиск врача...">
+                </div>
+                <div id="doctor-list" class="list-group">
+                    {% for doctor in doctors %}
+                        <a href="#" class="list-group-item list-group-item-action" data-doctor-id="{{ doctor.doctor_api_id }}">
+                            {{ doctor.name }}<br>
+                            <small class="text-muted">{{ doctor.ar_speciality_name }}</small>
+                        </a>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="col-md-8">
+                <h2>Календарь</h2>
+                <div id='calendar'></div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.2/main.min.css' rel='stylesheet' />
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.10.2/main.min.js'></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var calendarEl = document.getElementById('calendar');
+        var calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: 'dayGridMonth',
+            headerToolbar: {
+                left: 'prev,next today',
+                center: 'title',
+                right: 'dayGridMonth,timeGridWeek,timeGridDay'
+            },
+            events: [
+                // Здесь будут события
+            ]
+        });
+        calendar.render();
+
+        document.getElementById('doctorSearch').addEventListener('keyup', function() {
+            const filter = this.value.toLowerCase();
+            const doctors = document.querySelectorAll('#doctor-list .list-group-item');
+            doctors.forEach(doctor => {
+                const text = doctor.textContent.toLowerCase();
+                doctor.style.display = text.includes(filter) ? '' : 'none';
+            });
+        });
+    });
+</script>
+{% endblock %}
