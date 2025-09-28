@@ -22,16 +22,17 @@
         <div class="border rounded p-2" style="max-height:260px;overflow:auto;">
           <table class="table table-sm table-hover align-middle mb-0">
             <thead>
-              <tr class="small"><th><input type="checkbox" id="chkAll" /></th><th>ID</th><th>Имя</th><th>Спец</th><th>Адрес</th></tr>
+              <tr class="small"><th><input type="checkbox" id="chkAll" /></th><th>ID</th><th>Имя</th><th>Спец</th><th>Адрес</th><th>addrPt</th></tr>
             </thead>
             <tbody id="doctorTableBody">
             {% for d in doctors %}
-              <tr class="small doctor-row" data-id="{{ d.doctor_api_id }}" data-address="{{ (d.address or '')|e }}" data-name="{{ (d.name or '')|e }}">
+              <tr class="small doctor-row" data-id="{{ d.doctor_api_id }}" data-address="{{ (d.address or '')|e }}" data-name="{{ (d.name or '')|e }}" data-apid="{{ d.address_point_id }}">
                 <td><input type="checkbox" class="docChk" value="{{ d.doctor_api_id }}" /></td>
                 <td><code>{{ d.doctor_api_id }}</code></td>
                 <td>{{ d.name }}</td>
                 <td>{{ d.ar_speciality_name }}</td>
                 <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{{ d.address }}">{{ d.address or '' }}</td>
+                <td><small>{{ d.address_point_id or '' }}</small></td>
               </tr>
             {% endfor %}
             </tbody>

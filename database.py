@@ -33,6 +33,11 @@ def ensure_migrations():
             conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address VARCHAR"))
         except Exception:
             pass
+        # Add address_point_id column to doctor_info if missing
+        try:
+            conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address_point_id VARCHAR"))
+        except Exception:
+            pass
 
 ensure_migrations()
 
@@ -95,6 +100,18 @@ class DoctorInfo(Base):
     ar_speciality_id = Column(String, nullable=True)                # arSpecialityId (например, "2028")
     ar_speciality_name = Column(String, nullable=True)              # arSpecialityName (например, "Заболевание кожи...")
     address = Column(String, nullable=True)                        # Адрес (room.defaultAddress или lpuAddress)
+    address_point_id = Column(String, nullable=True, index=True)   # Идентификатор точки адреса (addressPointId)
+
+class LPUAddress(Base):
+    __tablename__ = 'lpu_addresses'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    address_point_id = Column(String, unique=True, index=True)
+    lpu_id = Column(String, index=True, nullable=True)
+    address = Column(String, nullable=True)
+    short_name = Column(String, nullable=True)
+
+    def __repr__(self):
+        return f"<LPUAddress(address_point_id={self.address_point_id}, lpu_id={self.lpu_id}, address={self.address})>"
 
     @hybrid_property
     def name_lower(self):
@@ -405,6 +422,10 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
 
     # Попытка извлечь адрес
     address_val = None
+    address_point_id_val = None
+    lpu_id_val = doctor_data.get("lpuId") or doctor_data.get("lpuID")
+    if doctor_data.get("addressPointId"):
+        address_point_id_val = str(doctor_data.get("addressPointId"))
     # Прямые ключи
     for k in ("lpuAddress", "address", "addressString", "defaultAddress"):
         if doctor_data.get(k):
@@ -417,7 +438,32 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
                 room = cr.get("room") if isinstance(cr, dict) else None
                 if room and room.get("defaultAddress"):
                     address_val = room.get("defaultAddress")
+                    if room.get("addressPointId"):
+                        address_point_id_val = str(room.get("addressPointId"))
+                    if room.get("lpuId") and not lpu_id_val:
+                        lpu_id_val = str(room.get("lpuId"))
                     break
+        except Exception:
+            pass
+
+    # Если есть связка адреса – сохраним/обновим её в таблице LPUAddress
+    if address_point_id_val:
+        try:
+            addr_obj = session.query(LPUAddress).filter_by(address_point_id=address_point_id_val).first()
+            if addr_obj:
+                updated = False
+                if address_val and addr_obj.address != address_val:
+                    addr_obj.address = address_val; updated = True
+                if lpu_id_val and addr_obj.lpu_id != str(lpu_id_val):
+                    addr_obj.lpu_id = str(lpu_id_val); updated = True
+                if updated:
+                    try:
+                        session.flush()
+                    except Exception:
+                        pass
+            else:
+                addr_obj = LPUAddress(address_point_id=address_point_id_val, lpu_id=str(lpu_id_val) if lpu_id_val else None, address=address_val)
+                session.add(addr_obj)
         except Exception:
             pass
 
@@ -464,6 +510,8 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
         doctor.ar_speciality_name = ar_speciality_name
         if address_val and (not doctor.address or doctor.address != address_val):
             doctor.address = address_val
+        if address_point_id_val and (not doctor.address_point_id or doctor.address_point_id != address_point_id_val):
+            doctor.address_point_id = address_point_id_val
         # print(f"Updated doctor {doctor_api_id}")
     else:
         # Создаем новую запись
@@ -473,7 +521,8 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             complex_resource_id=complex_resource_id,
             ar_speciality_id=ar_speciality_id,
             ar_speciality_name=ar_speciality_name,
-            address=address_val
+            address=address_val,
+            address_point_id=address_point_id_val
         )
         session.add(doctor)
         # print(f"Added doctor {doctor_api_id}")
