@@ -18,12 +18,19 @@
               <button class="btn btn-outline-secondary" type="button" id="openAddressSearch" title="Поиск"><i class="fa fa-search"></i></button>
               <button class="btn btn-outline-secondary" type="button" id="clearAddressPoint" title="Очистить"><i class="fa fa-times"></i></button>
             </div>
+            <div id="addrInlineSuggest" class="list-group position-absolute shadow small d-none" style="z-index:1050; max-height:260px; overflow:auto; width:100%;"></div>
             <datalist id="addressPointsList">
               {% for a in addresses %}
                 <option value="{{ a.address_point_id }}">{{ a.short_name or a.address or a.address_point_id }}</option>
               {% endfor %}
             </datalist>
-            <div class="form-text">Нажми лупу чтобы искать по подстроке (например: "гп 115"), затем выбери строку.</div>
+            <div class="form-text">Ввод:
+              <ul class="mb-1 ps-3">
+                <li>Цифры → стандартный список по ID (datalist)</li>
+                <li>Текст (например: «варшав», «черем») → всплывающий быстрый поиск по short_name и полному адресу</li>
+                <li>Кнопка лупы открывает расширенный модал с таблицей</li>
+              </ul>
+            </div>
             {% if addresses_payload|length == 0 %}
               <div class="alert alert-warning mt-2 py-2 px-3 small mb-2" id="addrEmptyMsg">
                 Адресов нет (таблица LPUAddress пуста или не загрузилась). <button type="button" class="btn btn-sm btn-outline-primary ms-2" id="addrReloadBtn">Обновить</button>
@@ -86,6 +93,8 @@
                 const input = document.getElementById('addressPointInput');
                 const searchInput = document.getElementById('addrSearchInput');
                 const tbody = document.querySelector('#addrResultsTable tbody');
+                const inlineBox = document.getElementById('addrInlineSuggest');
+                let inlineLastFilter = '';
                 function render(filter){
                   const f = (filter || '').trim().toLowerCase();
                   let filtered = ADDR_DATA;
@@ -103,6 +112,46 @@
                     tbody.appendChild(tr);
                   });
                 }
+                function hideInline(){ inlineBox?.classList.add('d-none'); }
+                function renderInline(filter){
+                  if(!inlineBox) return;
+                  const f = (filter||'').trim().toLowerCase();
+                  if(!f || f.length < 2){ hideInline(); return; }
+                  // Если пользователь вводит только цифры — не показываем inline (пусть работает datalist)
+                  if(/^[0-9]+$/.test(f)){ hideInline(); return; }
+                  if(f === inlineLastFilter) return; // no re-render if unchanged
+                  inlineLastFilter = f;
+                  let filtered = ADDR_DATA.filter(o => (o.short && o.short.toLowerCase().includes(f)) || (o.full && o.full.toLowerCase().includes(f)) || (o.ap && o.ap.toLowerCase().includes(f)) );
+                  if(filtered.length === 0){ hideInline(); return; }
+                  inlineBox.innerHTML = '';
+                  filtered.slice(0,50).forEach(o => {
+                    const a = document.createElement('button');
+                    a.type = 'button';
+                    a.className = 'list-group-item list-group-item-action py-1 px-2';
+                    const fullTxt = (o.full || '').replace(/"/g,'&quot;');
+                    a.innerHTML = `<div class="d-flex justify-content-between"><span><code>${o.ap}</code> ${o.short? '· '+o.short: ''}</span><span class="text-muted small">${fullTxt? fullTxt: ''}</span></div>`;
+                    a.dataset.ap = o.ap || '';
+                    inlineBox.appendChild(a);
+                  });
+                  // Position: ensure directly under input group
+                  inlineBox.classList.remove('d-none');
+                }
+                input?.addEventListener('input', e => {
+                  renderInline(e.target.value);
+                });
+                inlineBox?.addEventListener('click', e => {
+                  const btn = e.target.closest('.list-group-item');
+                  if(!btn) return;
+                  const ap = btn.dataset.ap;
+                  if(ap){ input.value = ap; }
+                  hideInline();
+                });
+                document.addEventListener('click', e => {
+                  if(!inlineBox) return;
+                  if(e.target === inlineBox || inlineBox.contains(e.target)) return;
+                  if(e.target === input) return;
+                  hideInline();
+                });
                 openBtn?.addEventListener('click', () => {
                   ensureModal();
                   render('');
