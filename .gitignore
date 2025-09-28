@@ -41,6 +41,15 @@ data/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
+*.bak*
+
+# Archives / exports
+*.zip
+*.tar
+*.tar.gz
+*.tgz
 
 # Logs
 *.log
