@@ -1,5 +1,6 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Boolean, text, Table, JSON, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Boolean, text, Table, JSON, Text, func
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import sessionmaker, relationship
 from pathlib import Path
 from datetime import datetime
@@ -88,6 +89,16 @@ class DoctorInfo(Base):
     complex_resource_id = Column(String, nullable=True)           # ID complexResource, берем первый элемент
     ar_speciality_id = Column(String, nullable=True)                # arSpecialityId (например, "2028")
     ar_speciality_name = Column(String, nullable=True)              # arSpecialityName (например, "Заболевание кожи...")
+
+    @hybrid_property
+    def name_lower(self):
+        # Python-level Unicode-aware casefold for comparisons
+        return self.name.casefold() if self.name else None
+
+    @name_lower.expression
+    def name_lower(cls):
+        # SQL expression for case-insensitive matching
+        return func.lower(cls.name)
 
     def __repr__(self):
         return (f"<DoctorInfo(doctor_api_id={self.doctor_api_id}, name={self.name}, "

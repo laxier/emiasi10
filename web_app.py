@@ -25,7 +25,7 @@ from emias_api import (
 import json, datetime as dt
 from datetime import timezone, timedelta
 import os
-from sqlalchemy import text, or_
+from sqlalchemy import text, or_, func
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')
@@ -299,7 +299,7 @@ def toggle_auto(doctor_id):
         session_db.close()
     return redirect(url_for('user_dashboard'))
 
-@app.route('/admin')
+@app.route('/admin/')
 def admin_dashboard():
     if 'user_id' not in session or not is_admin(session['user_id']):
         return redirect(url_for('login'))
@@ -527,30 +527,45 @@ def admin_model_list(model_key):
     q = (request.args.get('q') or '').strip()
     if q:
         like = f"%{q}%"
+        # Lowercase literal once in Python to avoid relying on SQL lower() behavior for Cyrillic
+        like_lower = like.lower()
         # Специальная логика для расписаний врачей (schedule): хотим искать по имени врача, специальности и doctor_api_id
         if model_key == 'schedule':
             try:
                 query = query.join(DoctorInfo, DoctorSchedule.doctor_api_id == DoctorInfo.doctor_api_id)
                 query = query.filter(
                     or_(
-                        DoctorInfo.name.ilike(like),
-                        DoctorInfo.ar_speciality_name.ilike(like),
-                        DoctorSchedule.doctor_api_id.ilike(like)
+                        func.lower(DoctorInfo.name).like(like_lower),
+                        func.lower(DoctorInfo.ar_speciality_name).like(like_lower),
+                        func.lower(DoctorSchedule.doctor_api_id).like(like_lower)
                     )
                 )
             except Exception:
                 # Fallback: простейший фильтр по doctor_api_id
                 try:
-                    query = query.filter(DoctorSchedule.doctor_api_id.ilike(like))
+                    query = query.filter(func.lower(DoctorSchedule.doctor_api_id).like(like_lower))
                 except Exception:
                     pass
+        elif model_key == 'doctor':
+            # Для поиска по врачам: SQLite lower()/COLLATE может некорректно обрабатывать кириллицу.
+            # Поэтому не фильтруем по `name`/`ar_speciality_name` на SQL-уровне — это сделает
+            # Python-side casefold фильтр ниже. Единственный SQL-фильтр, который надёжно
+            # работает, это по doctor_api_id (цифровой идентификатор).
+            try:
+                # Если пользователь ввёл только цифры (или строку содержащую цифры),
+                # ограничим выборку по doctor_api_id для эффективности.
+                if q.isdigit():
+                    query = query.filter(DoctorInfo.doctor_api_id.like(like))
+                # иначе оставляем фильтрацию по текстовым полям на Python-стороне
+            except Exception:
+                pass
         else:
             # Универсальный упрощённый поиск: пытаемся угадать популярные поля
             filters = []
             for attr_name in ('name','doctor_api_id','code','ar_speciality_name','action','details'):
                 if hasattr(Model, attr_name):
                     try:
-                        filters.append(getattr(Model, attr_name).ilike(like))
+                        filters.append(func.lower(getattr(Model, attr_name)).like(like_lower))
                     except Exception:
                         pass
             if filters:
@@ -567,6 +582,32 @@ def admin_model_list(model_key):
         try:
             query = query.order_by(getattr(Model, cfg['order_by']))
         except Exception:
+            pass
+
+    # Special-case: SQLite's lower()/COLLATE NOCASE may not handle Unicode (Cyrillic) properly.
+    # For the `doctor` model, if a free-text q is provided, perform a Python-side
+    # casefold() filter to guarantee Unicode-aware case-insensitive matching.
+    if model_key == 'doctor' and q:
+        try:
+            all_items = query.all()
+            q_fold = q.casefold()
+            filtered = []
+            for it in all_items:
+                hay = []
+                if getattr(it, 'name', None):
+                    hay.append(it.name.casefold())
+                if getattr(it, 'ar_speciality_name', None):
+                    hay.append(it.ar_speciality_name.casefold())
+                if getattr(it, 'doctor_api_id', None):
+                    hay.append(str(it.doctor_api_id).casefold())
+                if any(q_fold in v for v in hay):
+                    filtered.append(it)
+            total_found = len(filtered)
+            items = filtered[:500]
+            session_db.close()
+            return render_template('admin_model_list.html', cfg=cfg, model_key=model_key, items=items, q=q, total_found=total_found)
+        except Exception:
+            # fallback to SQL-based results if something goes wrong
             pass
 
     # Считаем количество найденных (до лимита) — отдельный запрос
