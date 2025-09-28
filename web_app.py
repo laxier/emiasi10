@@ -633,12 +633,32 @@ def admin_model_delete(model_key, obj_id):
     session_db = get_db_session()
     obj = session_db.query(Model).filter_by(id=obj_id).first()
     if obj:
-        session_db.delete(obj)
-        session_db.commit()
-        try:
-            log_user_action(session_db, session.get('user_id'), 'admin_delete', f'{model_key}#{obj_id}', source='web', status='warning')
-        except Exception:
-            pass
+        if model_key == 'schedule':
+            # Вместо удаления строки очищаем расписание, чтобы не ловить UNIQUE ошибки при повторном сохранении.
+            try:
+                obj.schedule_text = '[]'
+                # Ставим updated_at на сейчас
+                try:
+                    import datetime as _dt
+                    obj.updated_at = _dt.datetime.utcnow()
+                except Exception:
+                    pass
+                session_db.commit()
+                flash('Расписание сброшено (schedule_text=[])', 'warning')
+                try:
+                    log_user_action(session_db, session.get('user_id'), 'admin_clear_schedule', f'schedule#{obj_id}', source='web', status='warning')
+                except Exception:
+                    pass
+            except Exception as clr_err:
+                session_db.rollback()
+                flash(f'Не удалось сбросить расписание: {clr_err}', 'danger')
+        else:
+            session_db.delete(obj)
+            session_db.commit()
+            try:
+                log_user_action(session_db, session.get('user_id'), 'admin_delete', f'{model_key}#{obj_id}', source='web', status='warning')
+            except Exception:
+                pass
     session_db.close()
     # После удаления возвращаемся к списку соответствующей модели
     return redirect(url_for('admin_model_list', model_key=model_key))

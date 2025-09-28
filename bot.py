@@ -2479,13 +2479,14 @@ async def check_schedule_updates():
         # (без вычисления diff и без уведомлений) чтобы состояние было консистентным.
         if track.auto_booking:
             try:
-                if baseline_missing:
+                # UPSERT DoctorSchedule baseline
+                if baseline_missing or not old_schedule_record:
+                    old_schedule_record = session.query(DoctorSchedule).filter_by(doctor_api_id=doctor.doctor_api_id).first()
+                if not old_schedule_record:
                     old_schedule_record = DoctorSchedule(doctor_api_id=doctor.doctor_api_id, schedule_text=new_schedule_json)
                     session.add(old_schedule_record)
-                    # logging.debug(f"[AUTO_BOOK] Baseline created for {doctor.name} before booking attempt")
                 else:
                     old_schedule_record.schedule_text = new_schedule_json
-                    # logging.debug(f"[AUTO_BOOK] Baseline updated for {doctor.name} before booking attempt")
                 session.commit()
             except Exception as bl_err:
                 session.rollback()
@@ -2546,7 +2547,10 @@ async def check_schedule_updates():
         # Сравнение
         added, removed, changes_text = compare_schedules_payloads(old_data, new_schedule)
         # После сравнения обновляем или создаём запись расписания
-        if baseline_missing:
+        # UPSERT DoctorSchedule after diff
+        if baseline_missing or not old_schedule_record:
+            old_schedule_record = session.query(DoctorSchedule).filter_by(doctor_api_id=doctor.doctor_api_id).first()
+        if not old_schedule_record:
             old_schedule_record = DoctorSchedule(doctor_api_id=doctor.doctor_api_id, schedule_text=new_schedule_json)
             session.add(old_schedule_record)
         else:
