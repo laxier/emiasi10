@@ -477,16 +477,46 @@ async def book_slot_callback(callback_query: CallbackQuery):
         if success:
             # Отключаем автозапись, поскольку пользователь вручную выбрал слот
             session = get_db_session()
+            from database import DoctorInfo, Specialty, UserDoctorLink, get_equivalent_speciality_codes
             tracking = session.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id, doctor_api_id=doctor_api_id).first()
             if tracking and tracking.auto_booking:
                 tracking.auto_booking = False
                 session.commit()
-            log_user_action(session, user_id, 'manual_booking', f'Доктор {doctor_api_id} слот {slot}', source='bot', status='success')
-            session.close()
-            await callback_query.message.edit_text(
-                f"✅ Успешно записались на {slot}!",
-                parse_mode="HTML"
+            doctor_obj = session.query(DoctorInfo).filter_by(doctor_api_id=str(doctor_api_id)).first()
+            speciality_name = doctor_obj.ar_speciality_name if doctor_obj else "Специальность"
+            doctor_name = doctor_obj.name if doctor_obj else f"Врач {doctor_api_id}"
+            # Определяем была ли это смена записи (shift) — есть ли у пользователя link с appointment_id по спецам
+            is_shift = False
+            if doctor_obj and doctor_obj.ar_speciality_id:
+                for sc in get_equivalent_speciality_codes(doctor_obj.ar_speciality_id):
+                    link = session.query(UserDoctorLink).filter_by(telegram_user_id=user_id, doctor_speciality=sc).first()
+                    if link and link.appointment_id:
+                        # если слот попал в book_appointment он уже мог быть перенесён; считаем это переносом
+                        is_shift = True
+                        break
+            # Форматируем время слота
+            from datetime import datetime
+            date_str = slot[:10]
+            time_part = slot[11:16] if len(slot) >= 16 else slot
+            try:
+                dt = datetime.strptime(slot, "%Y-%m-%d %H:%M")
+                months = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
+                date_human = f"{dt.day} {months.get(dt.month, dt.strftime('%B'))} {dt.year}"
+                time_human = dt.strftime("%H:%M")
+            except Exception:
+                date_human = date_str
+                time_human = time_part
+            verb = "перенесён" if is_shift else "создан"
+            msg = (
+                f"✅ Приём {verb}!\n"
+                f"👨‍⚕️ {doctor_name}\n"
+                f"🩺 {speciality_name}\n"
+                f"📅 {date_human}\n"
+                f"🕒 {time_human}"
             )
+            log_user_action(session, user_id, 'manual_booking', f'{verb} doctor={doctor_api_id} slot={slot}', source='bot', status='success')
+            session.close()
+            await callback_query.message.edit_text(msg, parse_mode="HTML")
         else:
             session = get_db_session()
             log_user_action(session, user_id, 'manual_booking_fail', f'Доктор {doctor_api_id} слот {slot} ошибка: {error_msg}', source='bot', status='error')
