@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+
+{% block title %}Массовое отслеживание{% endblock %}
+
+{% block nav_links %}
+    <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+{% endblock %}
+
+{% block content %}
+<h1><i class="fas fa-layer-group"></i> Массовое отслеживание</h1>
+<p class="text-muted">Введите список doctor_id (каждый на новой строке, через пробел или запятую) и общие правила времени. Это упростит отслеживание нескольких кабинетов (например, ЭКГ на одном адресе) или нескольких ресурсов СМАД.</p>
+<form method="post">
+  <div class="row g-3">
+    <div class="col-md-5">
+      <label class="form-label">Doctor IDs</label>
+      <textarea name="doctor_ids" class="form-control" rows="12" placeholder="123456789\n123456790\n..."></textarea>
+      <div class="form-text">Разделяйте doctor_id пробелом, новой строкой, запятой или точкой с запятой.</div>
+      <details class="mt-2">
+        <summary class="small">Подсказка: выбрать из списка</summary>
+        <div class="border rounded p-2" style="max-height:220px;overflow:auto;">
+          {% for d in doctors %}
+            <div class="small selectable-doctor" data-id="{{ d.doctor_api_id }}">
+              <code>{{ d.doctor_api_id }}</code> — {{ d.name }} ({{ d.ar_speciality_name }})
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+    </div>
+    <div class="col-md-7">
+      <label class="form-label">Правила (как в одиночном добавлении)</label>
+      <div id="rulesBuilder">
+        <div class="row g-2 align-items-end mb-2">
+          <div class="col-md-3">
+            <label class="form-label small mb-1">Тип</label>
+            <select id="ruleType" class="form-select form-select-sm">
+              <option value="weekday">День недели</option>
+              <option value="date">Конкретная дата</option>
+              <option value="relative">Сегодня/Завтра</option>
+              <option value="range">Диапазон дат</option>
+            </select>
+          </div>
+          <div class="col-md-3" id="weekdayWrapper">
+            <label class="form-label small mb-1">День</label>
+            <select id="weekday" class="form-select form-select-sm">
+              <option value="понедельник">Понедельник</option>
+              <option value="вторник">Вторник</option>
+              <option value="среда">Среда</option>
+              <option value="четверг">Четверг</option>
+              <option value="пятница">Пятница</option>
+              <option value="суббота">Суббота</option>
+              <option value="воскресенье">Воскресенье</option>
+            </select>
+          </div>
+          <div class="col-md-3 d-none" id="dateWrapper">
+            <label class="form-label small mb-1">Дата</label>
+            <input type="date" id="dateValue" class="form-control form-control-sm" />
+          </div>
+          <div class="col-md-3 d-none" id="relativeWrapper">
+            <label class="form-label small mb-1">Относительно</label>
+            <select id="relativeValue" class="form-select form-select-sm">
+              <option value="сегодня">Сегодня</option>
+              <option value="завтра">Завтра</option>
+            </select>
+          </div>
+          <div class="col-md-4 d-none" id="rangeWrapper">
+            <label class="form-label small mb-1">Диапазон</label>
+            <div class="d-flex flex-column gap-1">
+              <input type="date" id="rangeStart" class="form-control form-control-sm" />
+              <div class="d-flex gap-2 align-items-center">
+                <span class="small">Дней</span>
+                <input type="range" id="rangeDays" min="1" max="30" value="1" class="form-range" />
+              </div>
+              <div class="small text-muted" id="rangeInfo">Выберите дату начала</div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small mb-1">Время</label>
+            <div class="d-flex gap-2 mb-1">
+              <input type="time" id="timeFrom" class="form-control form-control-sm" value="09:00" />
+              <input type="time" id="timeTo" class="form-control form-control-sm" value="13:00" />
+            </div>
+            <select id="presetRange" class="form-select form-select-sm mb-1">
+              <option value="">Выбрать...</option>
+              <option value="08:00-12:00">08:00-12:00</option>
+              <option value="09:00-13:00">09:00-13:00</option>
+              <option value="10:00-14:00">10:00-14:00</option>
+              <option value="14:00-18:00">14:00-18:00</option>
+              <option value="16:00-20:00">16:00-20:00</option>
+            </select>
+            <div class="d-flex flex-wrap gap-1 small">
+              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="08:00-11:00">08-11</button>
+              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="11:00-14:00">11-14</button>
+              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="12:00-16:00">12-16</button>
+              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="16:00-20:00">16-20</button>
+            </div>
+          </div>
+          <div class="col-md-2">
+            <button type="button" id="addRuleBtn" class="btn btn-success w-100 btn-sm"><i class="fas fa-plus"></i> Правило</button>
+          </div>
+        </div>
+        <input type="hidden" name="rules" id="rulesInput" />
+        <div id="rulesList" class="mb-3"></div>
+      </div>
+      <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Применить</button>
+    </div>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Selecting doctors by click appends id to textarea
+  document.querySelectorAll('.selectable-doctor').forEach(el=>{
+    el.style.cursor='pointer';
+    el.addEventListener('click', ()=>{
+      const ta = document.querySelector('textarea[name="doctor_ids"]');
+      const id = el.getAttribute('data-id');
+      if(ta.value.indexOf(id)===-1){
+        if(ta.value.trim()) ta.value += '\n';
+        ta.value += id;
+      }
+    });
+  });
+  const ruleType = document.getElementById('ruleType');
+  const weekdayWrapper = document.getElementById('weekdayWrapper');
+  const dateWrapper = document.getElementById('dateWrapper');
+  const relativeWrapper = document.getElementById('relativeWrapper');
+  const rangeWrapper = document.getElementById('rangeWrapper');
+  const weekday = document.getElementById('weekday');
+  const dateValue = document.getElementById('dateValue');
+  const relativeValue = document.getElementById('relativeValue');
+  const rangeStart = document.getElementById('rangeStart');
+  const rangeDays = document.getElementById('rangeDays');
+  const rangeInfo = document.getElementById('rangeInfo');
+  const timeFrom = document.getElementById('timeFrom');
+  const timeTo = document.getElementById('timeTo');
+  const presetRange = document.getElementById('presetRange');
+  const rulesInput = document.getElementById('rulesInput');
+  const rulesList = document.getElementById('rulesList');
+  const addRuleBtn = document.getElementById('addRuleBtn');
+  let rules = [];
+  function sync(){ rulesInput.value = rules.join(','); }
+  function render(){
+    rulesList.innerHTML='';
+    if(!rules.length){ rulesList.innerHTML='<div class="text-muted">Правил пока нет.</div>'; return; }
+    rules.forEach((r,i)=>{
+      const div=document.createElement('div');
+      div.className='alert alert-secondary py-1 px-2 d-flex justify-content-between align-items-center';
+      div.style.fontSize='0.85rem';
+      div.innerHTML = `<span>${r}</span><button type="button" data-i="${i}" class="btn btn-sm btn-outline-danger">×</button>`;
+      rulesList.appendChild(div);
+    });
+  }
+  rulesList.addEventListener('click',e=>{
+    const btn=e.target.closest('button[data-i]');
+    if(!btn) return; const idx=parseInt(btn.getAttribute('data-i'),10); rules.splice(idx,1); sync(); render();
+  });
+  function updateRangeInfo(){
+    const start = rangeStart.value; const days=parseInt(rangeDays.value,10);
+    if(!start){ rangeInfo.textContent='Выберите дату начала'; return; }
+    const sd=new Date(start); const ed=new Date(sd.getTime()+(days-1)*86400000); rangeInfo.textContent=`До: ${ed.toISOString().slice(0,10)} (всего ${days} дн.)`;
+  }
+  rangeStart.addEventListener('change',updateRangeInfo); rangeDays.addEventListener('input',updateRangeInfo);
+  ruleType.addEventListener('change',()=>{
+    [weekdayWrapper,dateWrapper,relativeWrapper,rangeWrapper].forEach(d=>d.classList.add('d-none'));
+    if(ruleType.value==='weekday') weekdayWrapper.classList.remove('d-none');
+    if(ruleType.value==='date') dateWrapper.classList.remove('d-none');
+    if(ruleType.value==='relative') relativeWrapper.classList.remove('d-none');
+    if(ruleType.value==='range'){ rangeWrapper.classList.remove('d-none'); updateRangeInfo(); }
+  });
+  presetRange.addEventListener('change',()=>{ if(!presetRange.value) return; const [f,t]=presetRange.value.split('-'); timeFrom.value=f; timeTo.value=t; });
+  document.querySelectorAll('button.quick').forEach(b=>b.addEventListener('click',()=>{ const [f,t]=b.dataset.range.split('-'); timeFrom.value=f; timeTo.value=t; }));
+  addRuleBtn.addEventListener('click',()=>{
+    const from=timeFrom.value, to=timeTo.value; if(!from||!to||from>=to){ alert('Проверьте время'); return; }
+    if(ruleType.value==='range'){
+      if(!rangeStart.value){ alert('Укажите начало диапазона'); return; }
+      const days=parseInt(rangeDays.value,10); const sd=new Date(rangeStart.value);
+      for(let i=0;i<days;i++){ const d=new Date(sd.getTime()+i*86400000).toISOString().slice(0,10); rules.push(`${d} ${from}-${to}`); }
+      sync(); render(); return;
+    }
+    let prefix=''; if(ruleType.value==='weekday') prefix=weekday.value; else if(ruleType.value==='date') prefix=dateValue.value; else if(ruleType.value==='relative') prefix=relativeValue.value; if(!prefix){ alert('Проверьте поля'); return; }
+    rules.push(`${prefix} ${from}-${to}`); sync(); render();
+  });
+  render();
+</script>
+{% endblock %}

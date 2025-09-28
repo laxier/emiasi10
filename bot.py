@@ -915,6 +915,8 @@ async def get_specialities_handler(message: Message) -> None:
         await message.answer(answer_text, parse_mode="Markdown")
     else:
         await message.answer("Ошибка при выполнении запроса к API getSpecialitiesInfo.")
+    async def get_specialities_handler(message: Message) -> None:
+        await message.answer("Команда /get_specialities отключена.")
 
 
 from datetime import datetime
@@ -1141,94 +1143,8 @@ async def get_doctors_info_handler(message: Message, command: CommandObject):
                 f"так как speciality_id {html.escape(speciality_id_str)} не относится к дерматологии."
             )
 
-    # Получаем данные
-    data = get_doctors_info(
-        user_id=message.from_user.id,
-        speciality_id=[speciality_id_str],
-        referral_id=None,
-        appointment_id=None,
-        lpu_id=lpu_id_str
-    )
-    if not data:
-        await message.answer("Не удалось получить информацию о врачах.")
-        return
-
-    payload = data.get("payload", {})
-    doctors_info = payload.get("doctorsInfo", [])
-    not_available_doctors = payload.get("notAvailableDoctors", [])
-
-    # Сохраняем данные о врачах
-    session = get_db_session()
-    # Доступные
-    for block in doctors_info:
-        for resource in block.get("availableResources", []):
-            save_or_update_doctor(session, message.from_user.id, resource)
-    # Недоступные
-    for doc in not_available_doctors:
-        save_or_update_doctor(session, message.from_user.id, doc)
-    session.commit()
-
-    # Сразу отправляем данные (без накопления text_lines)
-    # --- Доступные ---
-    if doctors_info:
-        await message.answer("<b>Доступные врачи:</b>", parse_mode="HTML")
-
-        for block in doctors_info:
-            lpu_name = block.get("lpuShortName", "Без названия")
-            await message.answer(f"🏥 {lpu_name}", parse_mode="HTML")
-
-            resources = block.get("availableResources", [])
-            if not resources:
-                await message.answer("   Нет доступных ресурсов.")
-            else:
-                for resource in resources:
-                    resource_id = resource.get("id", "???")
-                    doc_name = resource.get("name", "Неизвестный врач")
-                    msg_text = f"👨‍⚕️ Врач: {doc_name}"
-
-                    # msg_text+=f"\n   - ResourceID: {resource_id}"
-                    for c_res in resource.get("complexResource", []):
-                        c_id = c_res.get("id", "???")
-                        # msg_text+=f"\n   - ComplexResourceID: {c_id}"
-                    kb = build_doctor_toggle_keyboard(session, message.from_user.id, str(resource_id))
-                    
-                    doctor = session.query(DoctorInfo).filter_by(doctor_api_id=str(resource_id)).first()
-                    if doctor:
-                        schedule_payload = await get_schedule_for_doctor(session, message.from_user.id, doctor)
-                        if schedule_payload:
-                            schedule_text = "\n\n" + format_schedule_message_simple(schedule_payload)
-                            msg_text += schedule_text
-                    
-                    msg_text = safe_html(msg_text)
-
-                    await message.answer(msg_text, reply_markup=kb, parse_mode="HTML")
-    else:
-        await message.answer("<b>Нет доступных врачей.</b>", parse_mode="HTML")
-
-    # --- Недоступные ---
-    if not_available_doctors:
-        await message.answer("<b>Недоступные врачи:</b>", parse_mode="HTML")
-        for doc in not_available_doctors:
-            doc_id = doc.get("id", "???")
-            doc_name = doc.get("name", "???")
-            msg_text = f"   - {doc_name}"
-            msg_text = safe_html(msg_text)
-            # msg_text+=f"(ID: {doc_id})"
-
-            # for c_res in doc.get("complexResource", []):
-            #     c_id = str(c_res.get("id", "???"))
-            #     msg_text+=(f"\n     ComplexResource: ID={c_id}")
-
-            kb = build_doctor_toggle_keyboard(session, message.from_user.id, str(doc_id))
-            await message.answer(
-                text=msg_text,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-    else:
-        await message.answer("Нет недоступных врачей.", parse_mode="HTML")
-
-    session.close()
+    # Команда отключена – прежняя логика удаления.
+    return
 
 
 from database import DoctorInfo
@@ -1405,6 +1321,11 @@ def build_tracked_doctor_keyboard(doctor_api_id: str, is_active: bool) -> Inline
         ]
     )
     return keyboard
+
+
+async def get_clinics_handler(message: Message, command: CommandObject):
+    # Команда отключена по запросу пользователя.
+    await message.answer("Команда /get_clinics отключена.")
 
 
 from collections.abc import Mapping, Sequence

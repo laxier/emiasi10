@@ -1461,6 +1461,90 @@ def add_favorite():
     session_db.close()
     return render_template('add_favorite.html', doctors=doctors)
 
+@app.route('/user/bulk_track', methods=['GET','POST'])
+def bulk_track():
+    """Массовое добавление отслеживания.
+    Пользователь вводит список doctor_id (через пробел, запятую или новую строку) и общие правила.
+    Использование: позволяет сразу подписаться на несколько кабинетов (например ЭКГ) или несколько ресурсов СМАД.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    user_id = session['user_id']
+    if request.method == 'POST':
+        ids_raw = request.form.get('doctor_ids','')
+        rules_raw = request.form.get('rules','')
+        # Парсинг doctor_ids — допускаем разделители: пробел, запятая, новая строка
+        import re
+        doc_ids = []
+        for tok in re.split(r'[\s,;]+', ids_raw.strip()):
+            if tok:
+                doc_ids.append(tok)
+        # Правила аналогично add_track: строка с правилами через запятую
+        rule_list = [r.strip() for r in (rules_raw.split(',') if rules_raw else []) if r.strip()]
+        # merge + dedup
+        rule_list = _merge_rules(rule_list)
+        seen_rules = set()
+        dedup_rules = []
+        for r in rule_list:
+            if r not in seen_rules:
+                seen_rules.add(r)
+                dedup_rules.append(r)
+        sess = get_db_session()
+        added = 0
+        updated = 0
+        try:
+            from database import UserTrackedDoctor, DoctorInfo
+            for did in doc_ids:
+                if not did:
+                    continue
+                track = sess.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id, doctor_api_id=did).first()
+                if not track:
+                    track = UserTrackedDoctor(telegram_user_id=user_id, doctor_api_id=did, tracking_rules=dedup_rules.copy(), active=True)
+                    sess.add(track)
+                    added += 1
+                    # лог
+                    try:
+                        doc = sess.query(DoctorInfo).filter_by(doctor_api_id=did).first()
+                        dname = doc.name if doc else did
+                        log_user_action(sess, user_id, 'Массовое отслеживание добавлено', f'Врач {dname}', source='web', status='success')
+                    except Exception:
+                        pass
+                else:
+                    # дополняем правила
+                    current = track.tracking_rules or []
+                    add_cnt = 0
+                    for r in dedup_rules:
+                        if r not in current:
+                            current.append(r)
+                            add_cnt += 1
+                    if add_cnt:
+                        track.tracking_rules = current
+                        try:
+                            from sqlalchemy.orm.attributes import flag_modified
+                            flag_modified(track, 'tracking_rules')
+                        except Exception:
+                            pass
+                        updated += 1
+                        try:
+                            doc = sess.query(DoctorInfo).filter_by(doctor_api_id=did).first()
+                            dname = doc.name if doc else did
+                            log_user_action(sess, user_id, 'Массовое правила дополнены', f'Врач {dname} +{add_cnt}', source='web', status='info')
+                        except Exception:
+                            pass
+            sess.commit()
+        finally:
+            sess.close()
+        if added or updated:
+            flash(f'Добавлено: {added}, обновлено: {updated}', 'success')
+        else:
+            flash('Нет изменений (все уже отслеживаются с этими правилами)', 'info')
+        return redirect(url_for('user_dashboard'))
+    # GET – показываем форму
+    sess = get_db_session()
+    doctors = sess.query(DoctorInfo).order_by(DoctorInfo.ar_speciality_name, DoctorInfo.name).all()
+    sess.close()
+    return render_template('bulk_track.html', doctors=doctors)
+
 
 if __name__ == '__main__':
     Base.metadata.create_all(bind=engine)
