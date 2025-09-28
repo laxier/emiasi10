@@ -1471,7 +1471,10 @@ async def favourites_handler(message: Message):
     await message.answer("Расписание для избранных врачей:")
 
     for doctor in favorite_doctors:
-        schedule_response = await get_schedule_for_doctor(session, user_id, doctor)
+        # Используем appointment_id (стандартная логика) – если ЭМИАС возвращает
+        # "Пациент уже записан...", всё равно пытаемся показать слоты (fallback внутри функции),
+        # а при отсутствии – выводим нейтральное сообщение.
+        schedule_response = await get_schedule_for_doctor(session, user_id, doctor, use_appointment=True)
 
         # Клавиатура для избранного и отслеживания
         fav_keyboard = build_doctor_toggle_keyboard(session, user_id, doctor.doctor_api_id)
@@ -1502,6 +1505,7 @@ async def favourites_handler(message: Message):
             error_desc = schedule_response.get("Описание") if schedule_response else None
             if not error_desc and schedule_response and schedule_response.get("payload"):
                 error_desc = schedule_response.get("payload").get("Описание")
+            # Показываем исходный текст из API без подмены; если его нет – fallback.
             msg = f"{doctor.name} ({doctor.ar_speciality_name}): {error_desc or 'Не удалось получить расписание для врача.'}"
             await message.answer(msg, reply_markup=combined_keyboard)
 
