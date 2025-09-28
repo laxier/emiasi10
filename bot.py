@@ -2275,46 +2275,7 @@ async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo, use
     if use_appointment:
         logging.info(f"appointment_id candidate: {appointment_id}")
     if use_appointment and appointment_id:
-        # Логика по требованию: сначала пробуем БЕЗ appointment_id.
-        # Если приходит сообщение "Пациент уже записан на прием к врачу данной специальности",
-        # тогда повторяем запрос уже С appointment_id.
-        phrase = "Пациент уже записан на прием к врачу данной специальности"
-        try:
-            base_response = get_available_resource_schedule_info(
-                user_id,
-                doctor.doctor_api_id,
-                doctor.complex_resource_id,
-            )
-        except Exception as e_base:
-            logging.error(f"Ошибка базового запроса без appointment_id: {e_base}; пробуем сразу с appointment_id")
-            base_response = None
-
-        if base_response:
-            # Проверяем наличие расписания
-            payload = base_response.get("payload") if isinstance(base_response, dict) else None
-            schedule_days = payload.get("scheduleOfDay") if payload else None
-            if schedule_days:
-                return base_response  # уже есть расписание
-            # Извлекаем описание
-            desc = base_response.get("Описание") if isinstance(base_response, dict) else None
-            if not desc and payload:
-                desc = payload.get("Описание")
-            if desc and desc.strip().startswith(phrase):
-                # Повторяем с appointment_id
-                try:
-                    second_response = get_available_resource_schedule_info(
-                        user_id,
-                        available_resource_id=doctor.doctor_api_id,
-                        complex_resource_id=doctor.complex_resource_id,
-                        appointment_id=appointment_id,
-                    )
-                    return second_response
-                except Exception as e_appt:
-                    logging.error(f"Ошибка при повторном запросе с appointment_id {appointment_id}: {e_appt}")
-                    return base_response
-            # Иная ошибка / отсутствие расписания — возвращаем что получили (сырой ответ требовался)
-            return base_response
-        # Если базового ответа нет — пробуем только с appointment_id
+        # Прямой запрос с appointment_id без предварительного варианта.
         try:
             return get_available_resource_schedule_info(
                 user_id,
@@ -2322,9 +2283,9 @@ async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo, use
                 complex_resource_id=doctor.complex_resource_id,
                 appointment_id=appointment_id,
             )
-        except Exception as e_final:
-            logging.error(f"Не удалось получить расписание ни без, ни с appointment_id: {e_final}")
-            return None
+        except Exception as e:
+            logging.error(f"Ошибка при запросе расписания с appointment_id={appointment_id}: {e}")
+            # Падаем в обычный запрос без appointment_id ниже.
 
     # Если нет appointment_id, пробуем без
     return get_available_resource_schedule_info(
