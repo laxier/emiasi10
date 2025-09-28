@@ -10,25 +10,6 @@
 
 {% block content %}
         <h1 class="mb-4">Админ панель</h1>
-        <div class="card mb-4">
-            <div class="card-header">
-                <h2 class="h5 mb-0">Пользователи</h2>
-            </div>
-            <div class="card-body">
-                <ul class="list-group">
-                    {% for u in users %}
-                        <li class="list-group-item d-flex justify-content-between align-items-center">
-                            {{ u.telegram_user_id }} - OMS: {{ u.oms_number }} - Admin: {{ 'Да' if u.is_admin else 'Нет' }}
-                            {% if not u.is_admin %}
-                                <form method="post" action="{{ url_for('make_admin', user_id=u.telegram_user_id) }}" style="display:inline;">
-                                    <button type="submit" class="btn btn-sm btn-warning">Сделать админом</button>
-                                </form>
-                            {% endif %}
-                        </li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
                 <div class="card mb-4">
                     <div class="card-header">
                         <h2 class="h5 mb-0">Врачи (первые 50)</h2>
@@ -58,8 +39,8 @@
 
                 <h2 class="h5 mb-3">Модели</h2>
                 <div class="row g-3 mb-4">
-                    {% for key,cfg in models.items() %}
-                        {% set is_user = (key == 'user') %}
+                    {% for key,cfg in models.items() if key != 'user' %}
+                        {% set is_user = False %}
                         <div class="col-md-6 col-lg-4">
                             <div class="card h-100 shadow-sm">
                                 <div class="card-body d-flex flex-column">
@@ -69,12 +50,8 @@
                                         {% if is_user %}Только просмотр{% elif cfg.delete %}Удаление{% else %}Только правка{% endif %}
                                     </p>
                                     <div class="mt-auto d-flex gap-2">
-                                        {% if is_user %}
-                                           <a class="btn btn-sm btn-outline-secondary disabled" aria-disabled="true">Просмотр</a>
-                                        {% else %}
-                                           <a class="btn btn-sm btn-primary" href="{{ url_for('admin_model_list', model_key=key) }}">Открыть</a>
-                                           {% if cfg.create %}<a class="btn btn-sm btn-outline-success" href="{{ url_for('admin_model_create', model_key=key) }}">Новая</a>{% endif %}
-                                        {% endif %}
+                                                     <a class="btn btn-sm btn-primary" href="{{ url_for('admin_model_list', model_key=key) }}">Открыть</a>
+                                                     {% if cfg.create %}<a class="btn btn-sm btn-outline-success" href="{{ url_for('admin_model_create', model_key=key) }}">Новая</a>{% endif %}
                                     </div>
                                 </div>
                             </div>
