@@ -131,6 +131,8 @@ async def get_password_handler(message: Message) -> None:
     session.close()
 
 
+
+
 # Обработчик /get_profile_info – получает данные из профиля и запрашивает информацию по API
 from datetime import datetime, date, time, timedelta
 from aiogram.types import Message
@@ -556,11 +558,34 @@ async def book_slot_callback(callback_query: CallbackQuery):
         _, doctor_api_id, slot = data_parts
         user_id = callback_query.from_user.id
 
-        # Попытаться записаться
-        success, error_msg = await book_appointment(user_id, doctor_api_id, slot)
+        chat_id = callback_query.message.chat.id
+        # Отвечаем, чтобы Telegram не показывал "часики"
+        try:
+            await callback_query.answer("Пробуем записаться...")
+        except Exception:
+            pass
+        # Удаляем исходное сообщение
+        try:
+            await callback_query.message.delete()
+        except Exception as del_err:
+            logging.warning(f"BOOK_SLOT: can't delete original msg: {del_err}")
+            # Как минимум уберём клавиатуру
+            try:
+                await callback_query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
         from database import get_db_session, log_user_action, UserTrackedDoctor
+        success = False
+        error_msg = None
+        try:
+            success, error_msg = await book_appointment(user_id, doctor_api_id, slot)
+        except Exception as exec_err:
+            logging.exception("BOOK_SLOT: exception in book_appointment")
+            error_msg = f"Внутренняя ошибка: {exec_err}"
+            success = False
+
         if success:
-            # Отключаем автозапись, поскольку пользователь вручную выбрал слот
             session = get_db_session()
             from database import DoctorInfo, Specialty, UserDoctorLink, get_equivalent_speciality_codes
             tracking = session.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id, doctor_api_id=doctor_api_id).first()
@@ -570,16 +595,13 @@ async def book_slot_callback(callback_query: CallbackQuery):
             doctor_obj = session.query(DoctorInfo).filter_by(doctor_api_id=str(doctor_api_id)).first()
             speciality_name = doctor_obj.ar_speciality_name if doctor_obj else "Специальность"
             doctor_name = doctor_obj.name if doctor_obj else f"Врач {doctor_api_id}"
-            # Определяем была ли это смена записи (shift) — есть ли у пользователя link с appointment_id по спецам
             is_shift = False
             if doctor_obj and doctor_obj.ar_speciality_id:
                 for sc in get_equivalent_speciality_codes(doctor_obj.ar_speciality_id):
                     link = session.query(UserDoctorLink).filter_by(telegram_user_id=user_id, doctor_speciality=sc).first()
                     if link and link.appointment_id:
-                        # если слот попал в book_appointment он уже мог быть перенесён; считаем это переносом
                         is_shift = True
                         break
-            # Форматируем время слота
             from datetime import datetime
             date_str = slot[:10]
             time_part = slot[11:16] if len(slot) >= 16 else slot
@@ -601,12 +623,60 @@ async def book_slot_callback(callback_query: CallbackQuery):
             )
             log_user_action(session, user_id, 'manual_booking', f'{verb} doctor={doctor_api_id} slot={slot}', source='bot', status='success')
             session.close()
-            await callback_query.message.edit_text(msg, parse_mode="HTML")
+            try:
+                safe_msg = safe_html(msg)
+                try:
+                    await bot.send_message(chat_id, safe_msg, parse_mode="HTML")
+                except Exception as send_err:
+                    logging.warning(f"BOOK_SLOT: HTML send failed (success msg), retry plain: {send_err}; msg={safe_msg!r}")
+                    try:
+                        await bot.send_message(chat_id, msg)
+                    except Exception as send_err2:
+                        logging.error(f"BOOK_SLOT: failed to send success msg plain: {send_err2}")
+            except Exception as send_err:
+                logging.error(f"BOOK_SLOT: failed to send success msg outer: {send_err}")
         else:
             session = get_db_session()
-            log_user_action(session, user_id, 'manual_booking_fail', f'Доктор {doctor_api_id} слот {slot} ошибка: {error_msg}', source='bot', status='error')
+            from database import DoctorInfo
+            doctor_obj = session.query(DoctorInfo).filter_by(doctor_api_id=str(doctor_api_id)).first()
+            doctor_name = doctor_obj.name if doctor_obj else f"Врач {doctor_api_id}"
+            speciality_name = doctor_obj.ar_speciality_name if doctor_obj else ""
+            from datetime import datetime
+            date_human = slot[:10]
+            time_human = slot[11:16] if len(slot) >= 16 else slot
+            try:
+                dt = datetime.strptime(slot, "%Y-%m-%d %H:%M")
+                months = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
+                date_human = f"{dt.day} {months.get(dt.month, dt.strftime('%B'))} {dt.year}"
+                time_human = dt.strftime("%H:%M")
+            except Exception:
+                pass
+            error_clean = error_msg or "Неизвестная ошибка"
+            from database import log_user_action
+            log_user_action(session, user_id, 'manual_booking_fail', f'Доктор {doctor_api_id} слот {slot} ошибка: {error_clean}', source='bot', status='error')
             session.close()
-            await callback_query.answer(f"Не удалось записаться: {error_msg}", show_alert=True)
+            raw_new_text = (
+                "❌ <b>Не удалось записаться</b>\n"
+                f"👨‍⚕️ {doctor_name}" + (f" ({speciality_name})" if speciality_name else "") + "\n"
+                f"Слот: {date_human} {time_human}\n"
+                f"Ошибка: {error_clean}"
+            )
+            safe_new_text = safe_html(raw_new_text)
+            try:
+                try:
+                    await bot.send_message(chat_id, safe_new_text, parse_mode="HTML")
+                except Exception as send_err:
+                    logging.warning(f"BOOK_SLOT: HTML send failed (error msg), retry plain: {send_err}; msg={safe_new_text!r}")
+                    try:
+                        await bot.send_message(chat_id, raw_new_text)
+                    except Exception as send_err2:
+                        logging.error(f"BOOK_SLOT: failed to send error msg plain: {send_err2}")
+                        try:
+                            await callback_query.answer(f"Не удалось записаться: {error_clean}", show_alert=True)
+                        except Exception:
+                            pass
+            except Exception as outer_err:
+                logging.error(f"BOOK_SLOT: unexpected send error chain: {outer_err}")
     except Exception as e:
         session = get_db_session()
         log_user_action(session, callback_query.from_user.id, 'manual_booking_exception', f'Ошибка: {e}', source='bot', status='error')
