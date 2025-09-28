@@ -425,7 +425,8 @@ ADMIN_MODELS = {
     'doctor': {
         'model': DoctorInfo,
         'title': 'Врачи/Ресурсы',
-        'editable': ['name','ar_speciality_id','ar_speciality_name','complex_resource_id'],
+        # Добавили address_point_id для редактирования места приёма
+        'editable': ['name','ar_speciality_id','ar_speciality_name','complex_resource_id','address_point_id'],
         'create': False,
         'delete': False,
         'order_by': 'doctor_api_id'
@@ -699,15 +700,36 @@ def admin_model_edit(model_key, obj_id):
         return redirect(url_for('admin_model_list', model_key=model_key))
     if request.method == 'POST':
         changed_fields = []
+        old_values = {}
         for field in cfg['editable']:
             if field in request.form:
                 raw = request.form.get(field, '')
                 current = getattr(obj, field, None)
+                old_values[field] = current
                 new_val = _coerce_value(current, raw)
                 if new_val != current:
                     setattr(obj, field, new_val)
                     changed_fields.append(field)
         session_db.commit()
+        # Дополнительный лог по смене address_point_id с указанием адресов
+        if 'address_point_id' in changed_fields:
+            try:
+                from database import LPUAddress
+                old_id = old_values.get('address_point_id')
+                new_id = getattr(obj, 'address_point_id', None)
+                addr_old = None
+                addr_new = None
+                if old_id:
+                    addr_old = session_db.query(LPUAddress).filter_by(address_point_id=old_id).first()
+                if new_id:
+                    addr_new = session_db.query(LPUAddress).filter_by(address_point_id=new_id).first()
+                detail = f"address_point_id {old_id} -> {new_id} | old_short={(addr_old.short_name if addr_old else '')} | new_short={(addr_new.short_name if addr_new else '')}"
+                try:
+                    log_user_action(session_db, session.get('user_id'), 'admin_edit_doctor_address', detail, source='web', status='info')
+                except Exception:
+                    pass
+            except Exception:
+                pass
         # Сформировать ярлык до закрытия сессии, чтобы избежать DetachedInstanceError
         try:
             label_for_flash = _instance_label(model_key, obj)
@@ -751,8 +773,20 @@ def admin_model_edit(model_key, obj_id):
             flash(f'{prefix}: нет изменений', 'info')
         return redirect(url_for('admin_model_list', model_key=model_key))
     # For display we just pass object
+    # Подготовим список адресов для выбора если редактируем врача
+    addresses = []
+    if model_key == 'doctor':
+        try:
+            from database import LPUAddress
+            # Берём все адреса (при большом количестве можно добавить пагинацию/фильтр)
+            addresses = session_db.query(LPUAddress).order_by(LPUAddress.short_name.asc().nullsLast()).all()
+        except Exception:
+            try:
+                addresses = []
+            except Exception:
+                pass
     session_db.close()
-    return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj)
+    return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj, addresses=addresses)
 
 @app.route('/admin/tools/backfill_lpu_short_names', methods=['POST','GET'])
 def admin_backfill_lpu_short_names():
