@@ -109,7 +109,7 @@
                                     <th>ID</th>
                                     <th>Имя</th>
                                     <th>Специальность</th>
-                                    <th>Активен</th>
+                                    <th>Уведомления</th>
                                     <th>Автозапись</th>
                                     <th>Правила</th>
                                     <th>Действия</th>
@@ -124,7 +124,7 @@
                                         <td>{{ doctor.ar_speciality_name if doctor else 'Неизвестна' }}</td>
                                         <td>
                                             <form method="post" action="{{ url_for('toggle_track', doctor_id=t.doctor_api_id) }}" style="display:inline;">
-                                                <button type="submit" class="btn btn-sm {{ 'btn-success' if t.active else 'btn-outline-secondary' }}">{{ 'ON' if t.active else 'OFF' }}</button>
+                                                <button type="submit" class="btn btn-sm {{ 'btn-success' if t.active else 'btn-outline-secondary' }}" title="Переключить уведомления">{{ 'ON' if t.active else 'OFF' }}</button>
                                             </form>
                                         </td>
                                         <td>
