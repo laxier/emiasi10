@@ -2586,56 +2586,67 @@ async def check_schedule_updates():
                     # Если трек принадлежит batch со стратегией stop_after_first – отключаем авто-запись у остальных
                     siblings_disabled = []
                     try:
-                        if getattr(track, 'stop_after_first', False) and getattr(track, 'bulk_batch_id', None):
-                            consumed_batch = track.bulk_batch_id
-                            sibling_q = session.query(UserTrackedDoctor).filter(
-                                UserTrackedDoctor.telegram_user_id == user_id,
-                                UserTrackedDoctor.bulk_batch_id == consumed_batch,
-                                UserTrackedDoctor.id != track.id,
-                                UserTrackedDoctor.auto_booking == True
-                            ).all()
-                            for sib in sibling_q:
-                                if sib.auto_booking:
-                                    sib.auto_booking = False
-                                # Группа считается израсходованной – очищаем batch и стоп-флаг
-                                sib.bulk_batch_id = None
-                                sib.stop_after_first = False
-                                siblings_disabled.append(sib.doctor_api_id)
+                        if getattr(track, 'stop_after_first', False):
+                            consumed_batch = getattr(track, 'bulk_batch_id', None)
+                            # batch_id должен быть валидным (hex длиной 32). Если None / пусто / 'None' – не трогаем других.
+                            is_valid_batch = False
+                            if isinstance(consumed_batch, str) and len(consumed_batch) == 32 and all(c in '0123456789abcdef' for c in consumed_batch.lower()):
+                                is_valid_batch = True
+                            if is_valid_batch:
+                                sibling_q = session.query(UserTrackedDoctor).filter(
+                                    UserTrackedDoctor.telegram_user_id == user_id,
+                                    UserTrackedDoctor.bulk_batch_id == consumed_batch,
+                                    UserTrackedDoctor.id != track.id,
+                                    UserTrackedDoctor.auto_booking == True
+                                ).all()
+                                for sib in sibling_q:
+                                    if sib.auto_booking:
+                                        sib.auto_booking = False
+                                    # Группа считается израсходованной – очищаем batch и стоп-флаг
+                                    sib.bulk_batch_id = None
+                                    sib.stop_after_first = False
+                                    siblings_disabled.append(sib.doctor_api_id)
+                                    try:
+                                        log_user_action(session, user_id, 'auto_booking_group_disabled', f"doctor={sib.doctor_api_id} batch={consumed_batch}", source='bot', status='info')
+                                    except Exception:
+                                        pass
+                                # Текущий трек тоже отделяем от группы
+                                track.bulk_batch_id = None
+                                track.stop_after_first = False
+                                if siblings_disabled:
+                                    try:
+                                        named = []
+                                        if len(siblings_disabled) <= 25:
+                                            docs = session.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(siblings_disabled)).all()
+                                            name_map = {d.doctor_api_id: d.name for d in docs}
+                                            for did in siblings_disabled:
+                                                nm = name_map.get(did, did)
+                                                named.append(nm)
+                                        else:
+                                            named = siblings_disabled[:25]
+                                        if named:
+                                            preview_list = ', '.join(named[:6]) + (' …' if len(named) > 6 else '')
+                                            note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} в группе {consumed_batch[:8]}: {preview_list}")
+                                    except Exception:
+                                        note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} треков группы {consumed_batch[:8]}.")
+                                else:
+                                    note_lines.append("Группа завершена (других врачей не осталось).")
+                                # Фиксируем изменения
                                 try:
-                                    log_user_action(session, user_id, 'auto_booking_group_disabled', f"doctor={sib.doctor_api_id} batch={consumed_batch}", source='bot', status='info')
+                                    session.commit()
+                                except Exception as _c_err:
+                                    logging.warning(f"Failed commit after batch consume: {consumed_batch} err={_c_err}")
+                                try:
+                                    log_user_action(session, user_id, 'bulk_batch_consumed', f"batch={consumed_batch} winner={doctor.doctor_api_id} disabled={len(siblings_disabled)}", source='bot', status='success')
                                 except Exception:
                                     pass
-                            # Текущий трек тоже отделяем от группы, чтобы повторные переноси/записи не трогали уже отключённых
-                            track.bulk_batch_id = None
-                            track.stop_after_first = False
-                            if siblings_disabled:
-                                try:
-                                    named = []
-                                    if len(siblings_disabled) <= 25:
-                                        docs = session.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(siblings_disabled)).all()
-                                        name_map = {d.doctor_api_id: d.name for d in docs}
-                                        for did in siblings_disabled:
-                                            nm = name_map.get(did, did)
-                                            named.append(nm)
-                                    else:
-                                        named = siblings_disabled[:25]
-                                    if named:
-                                        preview_list = ', '.join(named[:6]) + (' …' if len(named) > 6 else '')
-                                        note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} в группе {consumed_batch[:8]}: {preview_list}")
-                                except Exception:
-                                    note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} треков группы {consumed_batch[:8]}.")
                             else:
-                                # Никого больше не было – просто отметим потребление группы
-                                note_lines.append("Группа завершена (других врачей не осталось).")
-                            # Зафиксируем изменения очистки batch немедленно
-                            try:
-                                session.commit()
-                            except Exception as _c_err:
-                                logging.warning(f"Failed commit after batch consume: {consumed_batch} err={_c_err}")
-                            try:
-                                log_user_action(session, user_id, 'bulk_batch_consumed', f"batch={consumed_batch} winner={doctor.doctor_api_id} disabled={len(siblings_disabled)}", source='bot', status='success')
-                            except Exception:
-                                pass
+                                # Некорректный (или отсутствующий) batch_id — не трогаем других.
+                                # Сбрасываем только текущий stop_after_first, чтобы не повторять попытку.
+                                if consumed_batch in (None, '', 'None'):
+                                    track.stop_after_first = False
+                                    # НЕ отключаем остальных с NULL.
+                                    note_lines.append("(Группа не задана — отключена только текущая автозапись.)")
                     except Exception as batch_err:
                         logging.warning(f"Failed stop_after_first batch handling batch={getattr(track,'bulk_batch_id',None)} err={batch_err}")
                     note = "\n".join(note_lines)
