@@ -9,7 +9,7 @@
 
 {% block content %}
 <h1><i class="fas fa-layer-group"></i> Массовое отслеживание</h1>
-<p class="text-muted">Введите список doctor_id (каждый на новой строке, через пробел или запятую) и общие правила времени. Это упростит отслеживание нескольких кабинетов (например, ЭКГ на одном адресе) или нескольких ресурсов СМАД.</p>
+<p class="text-muted">Введите список doctor_id (каждый на новой строке, через пробел или запятую) и общие правила времени. Можно фильтровать по адресу и выбрать нужные ресурсы галочками. Опция «Остановиться после первой удачной записи» пригодится для кабинетов СМАД.</p>
 <form method="post">
   <div class="row g-3">
     <div class="col-md-5">
@@ -17,15 +17,35 @@
       <textarea name="doctor_ids" class="form-control" rows="12" placeholder="123456789\n123456790\n..."></textarea>
       <div class="form-text">Разделяйте doctor_id пробелом, новой строкой, запятой или точкой с запятой.</div>
       <details class="mt-2">
-        <summary class="small">Подсказка: выбрать из списка</summary>
-        <div class="border rounded p-2" style="max-height:220px;overflow:auto;">
-          {% for d in doctors %}
-            <div class="small selectable-doctor" data-id="{{ d.doctor_api_id }}">
-              <code>{{ d.doctor_api_id }}</code> — {{ d.name }} ({{ d.ar_speciality_name }})
-            </div>
-          {% endfor %}
+        <summary class="small">Выбрать из списка (фильтр по адресу / названию)</summary>
+        <input type="text" id="filterInput" class="form-control form-control-sm mb-2" placeholder="Фильтр по адресу или имени..." />
+        <div class="border rounded p-2" style="max-height:260px;overflow:auto;">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead>
+              <tr class="small"><th><input type="checkbox" id="chkAll" /></th><th>ID</th><th>Имя</th><th>Спец</th><th>Адрес</th></tr>
+            </thead>
+            <tbody id="doctorTableBody">
+            {% for d in doctors %}
+              <tr class="small doctor-row" data-id="{{ d.doctor_api_id }}" data-address="{{ (d.address or '')|e }}" data-name="{{ (d.name or '')|e }}">
+                <td><input type="checkbox" class="docChk" value="{{ d.doctor_api_id }}" /></td>
+                <td><code>{{ d.doctor_api_id }}</code></td>
+                <td>{{ d.name }}</td>
+                <td>{{ d.ar_speciality_name }}</td>
+                <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{{ d.address }}">{{ d.address or '' }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="mt-2 d-flex gap-2">
+          <button type="button" id="appendSelected" class="btn btn-sm btn-outline-primary">Добавить выбранные ID</button>
+          <button type="button" id="clearSelected" class="btn btn-sm btn-outline-secondary">Снять выделение</button>
         </div>
       </details>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" value="1" id="stopOnFirst" name="stop_on_first" />
+        <label class="form-check-label" for="stopOnFirst">Остановиться после первой успешной записи (логика для будущей автозаписи)</label>
+      </div>
     </div>
     <div class="col-md-7">
       <label class="form-label">Правила (как в одиночном добавлении)</label>
@@ -111,16 +131,28 @@
 {% block scripts %}
 <script>
   // Selecting doctors by click appends id to textarea
-  document.querySelectorAll('.selectable-doctor').forEach(el=>{
-    el.style.cursor='pointer';
-    el.addEventListener('click', ()=>{
-      const ta = document.querySelector('textarea[name="doctor_ids"]');
-      const id = el.getAttribute('data-id');
-      if(ta.value.indexOf(id)===-1){
-        if(ta.value.trim()) ta.value += '\n';
-        ta.value += id;
-      }
+  const body = document.getElementById('doctorTableBody');
+  const filterInput = document.getElementById('filterInput');
+  filterInput?.addEventListener('input', ()=>{
+    const v = filterInput.value.toLowerCase();
+    body.querySelectorAll('tr.doctor-row').forEach(tr=>{
+      const addr = tr.dataset.address.toLowerCase();
+      const nm = tr.dataset.name.toLowerCase();
+      tr.style.display = (addr.includes(v) || nm.includes(v)) ? '' : 'none';
     });
+  });
+  document.getElementById('chkAll')?.addEventListener('change', e=>{
+    const checked = e.target.checked; body.querySelectorAll('input.docChk').forEach(c=>{ if(!c.closest('tr').style.display) c.checked = checked; });
+  });
+  document.getElementById('appendSelected')?.addEventListener('click', ()=>{
+    const ta = document.querySelector('textarea[name="doctor_ids"]');
+    const ids = []; body.querySelectorAll('input.docChk:checked').forEach(c=>ids.push(c.value));
+    ids.forEach(id=>{
+      if(ta.value.indexOf(id)===-1){ ta.value += (ta.value.trim()? '\n':'') + id; }
+    });
+  });
+  document.getElementById('clearSelected')?.addEventListener('click', ()=>{
+    body.querySelectorAll('input.docChk:checked').forEach(c=>c.checked=false);
   });
   const ruleType = document.getElementById('ruleType');
   const weekdayWrapper = document.getElementById('weekdayWrapper');

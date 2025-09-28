@@ -28,6 +28,11 @@ def ensure_migrations():
         except Exception:
             # Column already exists or table missing; ignore
             pass
+        # Add address column to doctor_info if missing
+        try:
+            conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address VARCHAR"))
+        except Exception:
+            pass
 
 ensure_migrations()
 
@@ -89,6 +94,7 @@ class DoctorInfo(Base):
     complex_resource_id = Column(String, nullable=True)           # ID complexResource, берем первый элемент
     ar_speciality_id = Column(String, nullable=True)                # arSpecialityId (например, "2028")
     ar_speciality_name = Column(String, nullable=True)              # arSpecialityName (например, "Заболевание кожи...")
+    address = Column(String, nullable=True)                        # Адрес (room.defaultAddress или lpuAddress)
 
     @hybrid_property
     def name_lower(self):
@@ -397,6 +403,24 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             ar_speciality_id = str(first_ldp.get("code")) if first_ldp.get("code") is not None else None
             ar_speciality_name = first_ldp.get("name")
 
+    # Попытка извлечь адрес
+    address_val = None
+    # Прямые ключи
+    for k in ("lpuAddress", "address", "addressString", "defaultAddress"):
+        if doctor_data.get(k):
+            address_val = doctor_data.get(k)
+            break
+    # Вложенный room в complexResource
+    if not address_val and complex_resource_list and isinstance(complex_resource_list, list):
+        try:
+            for cr in complex_resource_list:
+                room = cr.get("room") if isinstance(cr, dict) else None
+                if room and room.get("defaultAddress"):
+                    address_val = room.get("defaultAddress")
+                    break
+        except Exception:
+            pass
+
     # Если получили код специальности / ldpType – гарантируем наличие строки в Specialty.
     # Это позволит применять referral_policy и другие настройки и к ldpType.
     if ar_speciality_id:
@@ -438,6 +462,8 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             doctor.complex_resource_id = complex_resource_id
         doctor.ar_speciality_id = ar_speciality_id
         doctor.ar_speciality_name = ar_speciality_name
+        if address_val and (not doctor.address or doctor.address != address_val):
+            doctor.address = address_val
         # print(f"Updated doctor {doctor_api_id}")
     else:
         # Создаем новую запись
@@ -446,7 +472,8 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             name=name,
             complex_resource_id=complex_resource_id,
             ar_speciality_id=ar_speciality_id,
-            ar_speciality_name=ar_speciality_name
+            ar_speciality_name=ar_speciality_name,
+            address=address_val
         )
         session.add(doctor)
         # print(f"Added doctor {doctor_api_id}")

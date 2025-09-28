@@ -1472,6 +1472,7 @@ def bulk_track():
     user_id = session['user_id']
     if request.method == 'POST':
         ids_raw = request.form.get('doctor_ids','')
+        stop_on_first = request.form.get('stop_on_first') == '1'
         rules_raw = request.form.get('rules','')
         # Парсинг doctor_ids — допускаем разделители: пробел, запятая, новая строка
         import re
@@ -1535,7 +1536,8 @@ def bulk_track():
         finally:
             sess.close()
         if added or updated:
-            flash(f'Добавлено: {added}, обновлено: {updated}', 'success')
+            extra = ' (stop after first success)' if stop_on_first else ''
+            flash(f'Добавлено: {added}, обновлено: {updated}{extra}', 'success')
         else:
             flash('Нет изменений (все уже отслеживаются с этими правилами)', 'info')
         return redirect(url_for('user_dashboard'))
