@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, require_token
 from database import init_db, get_db_session, save_tokens, get_tokens, save_profile, get_profile, get_equivalent_speciality_codes, UserDoctorLink, log_user_action, DoctorSchedule
 from emias_api import get_whoami, refresh_emias_token, get_assignments_referrals_info
 from rules_parser import parse_user_tracking_input
@@ -2147,7 +2147,16 @@ from emias_api import get_available_resource_schedule_info
 from aiogram.types import Message
 from config import TELEGRAM_BOT_TOKEN
 
-# Создаем бота и диспетчер
+# Проверяем наличие токена до инициализации
+try:
+    require_token()
+except Exception as e:
+    import sys, logging
+    logging.error(str(e))
+    # Прерываем запуск, чтобы было видно понятное сообщение
+    raise
+
+# Создаем бота и диспетчер (токен гарантированно есть)
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
