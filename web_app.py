@@ -461,6 +461,14 @@ ADMIN_MODELS = {
         'create': False,
         'delete': True,
         'order_by': 'timestamp'
+    },
+    'schedule': {
+        'model': DoctorSchedule,
+        'title': 'Врачи расписания',
+        'editable': [],  # только просмотр
+        'create': False,
+        'delete': True,   # позволим чистить кеш расписаний вручную
+        'order_by': 'updated_at'
     }
 }
 
