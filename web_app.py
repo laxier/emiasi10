@@ -775,18 +775,31 @@ def admin_model_edit(model_key, obj_id):
     # For display we just pass object
     # Подготовим список адресов для выбора если редактируем врача
     addresses = []
+    addresses_payload = []
     if model_key == 'doctor':
         try:
             from database import LPUAddress
             # Берём все адреса (при большом количестве можно добавить пагинацию/фильтр)
             addresses = session_db.query(LPUAddress).order_by(LPUAddress.short_name.asc().nullsLast()).all()
+            for a in addresses:
+                try:
+                    addresses_payload.append({
+                        'id': a.id,
+                        'ap': a.address_point_id or '',
+                        'short': a.short_name or '',
+                        'full': a.address or '',
+                        'lpu': a.lpu_id or ''
+                    })
+                except Exception:
+                    pass
         except Exception:
             try:
                 addresses = []
+                addresses_payload = []
             except Exception:
                 pass
     session_db.close()
-    return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj, addresses=addresses)
+    return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj, addresses=addresses, addresses_payload=addresses_payload)
 
 @app.route('/admin/tools/backfill_lpu_short_names', methods=['POST','GET'])
 def admin_backfill_lpu_short_names():

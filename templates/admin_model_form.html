@@ -13,13 +13,108 @@
           <label class="form-label fw-semibold">{{ field }}</label>
           {% set val = (obj|attr(field)) if obj else '' %}
           {% if model_key == 'doctor' and field == 'address_point_id' %}
-            <input class="form-control" list="addressPointsList" name="address_point_id" value="{{ val or '' }}" placeholder="Начните вводить ID или короткое имя">
+            <div class="input-group">
+              <input class="form-control" id="addressPointInput" list="addressPointsList" name="address_point_id" value="{{ val or '' }}" placeholder="Начните вводить ID или короткое имя">
+              <button class="btn btn-outline-secondary" type="button" id="openAddressSearch" title="Поиск"><i class="fa fa-search"></i></button>
+              <button class="btn btn-outline-secondary" type="button" id="clearAddressPoint" title="Очистить"><i class="fa fa-times"></i></button>
+            </div>
             <datalist id="addressPointsList">
               {% for a in addresses %}
                 <option value="{{ a.address_point_id }}">{{ a.short_name or a.address or a.address_point_id }}</option>
               {% endfor %}
             </datalist>
-            <div class="form-text">Выберите существующий address_point_id. Фильтр по началу ID или short_name.</div>
+            <div class="form-text">Нажми лупу чтобы искать по подстроке (например: "гп 115"), затем выбери строку.</div>
+
+            <!-- Modal -->
+            <div class="modal fade" id="addressSearchModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-dialog-scrollable modal-lg">
+                <div class="modal-content">
+                  <div class="modal-header py-2">
+                    <h5 class="modal-title">Выбор адреса приёма</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body p-2">
+                    <div class="mb-2">
+                      <input type="text" class="form-control" id="addrSearchInput" placeholder="Поиск: часть ID, короткого или полного адреса (например: гп 115)">
+                      <div class="form-text">Фильтр: подстрока без регистра.</div>
+                    </div>
+                    <div class="table-responsive" style="max-height:60vh;">
+                      <table class="table table-sm table-hover align-middle" id="addrResultsTable">
+                        <thead class="table-light sticky-top">
+                          <tr>
+                            <th style="width:40px;">#</th>
+                            <th>ID</th>
+                            <th>short_name</th>
+                            <th>address</th>
+                            <th style="width:80px;">Действие</th>
+                          </tr>
+                        </thead>
+                        <tbody></tbody>
+                      </table>
+                    </div>
+                  </div>
+                  <div class="modal-footer py-2">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <script id="addrDataJson" type="application/json">{{ addresses_payload|tojson|safe }}</script>
+
+            <script>
+              (function(){
+                // Адреса будут прочитаны из скрытого script[type=json]
+                const addrJsonEl = document.getElementById('addrDataJson');
+                let ADDR_DATA = [];
+                try { ADDR_DATA = JSON.parse(addrJsonEl.textContent || '[]'); } catch(e) { console.error('addr json parse', e); }
+                const modalEl = document.getElementById('addressSearchModal');
+                let bsModal = null;
+                function ensureModal(){
+                  if (window.bootstrap && !bsModal){
+                    bsModal = new window.bootstrap.Modal(modalEl);
+                  }
+                }
+                const openBtn = document.getElementById('openAddressSearch');
+                const clearBtn = document.getElementById('clearAddressPoint');
+                const input = document.getElementById('addressPointInput');
+                const searchInput = document.getElementById('addrSearchInput');
+                const tbody = document.querySelector('#addrResultsTable tbody');
+                function render(filter){
+                  const f = (filter || '').trim().toLowerCase();
+                  let filtered = ADDR_DATA;
+                  if (f){
+                    filtered = ADDR_DATA.filter(o => (o.ap && o.ap.toLowerCase().includes(f)) || (o.short && o.short.toLowerCase().includes(f)) || (o.full && o.full.toLowerCase().includes(f)) );
+                  }
+                  tbody.innerHTML = '';
+                  filtered.slice(0,500).forEach((o, idx) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `<td class="text-muted small">${idx+1}</td>` +
+                                   `<td><code>${o.ap||''}</code></td>` +
+                                   `<td>${o.short? o.short: '<span class="text-muted">—</span>'}</td>` +
+                                   `<td class="small">${o.full? o.full: '<span class=\"text-muted\">—</span>'}</td>` +
+                                   `<td><button type="button" class="btn btn-sm btn-outline-primary select-ap" data-ap="${o.ap||''}"><i class="fa fa-check"></i></button></td>`;
+                    tbody.appendChild(tr);
+                  });
+                }
+                openBtn?.addEventListener('click', () => {
+                  ensureModal();
+                  render('');
+                  if (bsModal) bsModal.show();
+                  setTimeout(()=> searchInput?.focus(), 300);
+                });
+                clearBtn?.addEventListener('click', () => { input.value=''; });
+                searchInput?.addEventListener('input', e => {
+                  render(e.target.value);
+                });
+                tbody?.addEventListener('click', e => {
+                  const btn = e.target.closest('.select-ap');
+                  if (!btn) return;
+                  const ap = btn.getAttribute('data-ap');
+                  if (ap){ input.value = ap; }
+                  if (bsModal) bsModal.hide();
+                });
+              })();
+            </script>
           {% elif val is mapping or val is sequence and not val is string or field.endswith('rules') %}
             <textarea class="form-control font-monospace" rows="4" name="{{ field }}">{{ val }}</textarea>
             <div class="form-text">JSON / список. При ошибке парсинга значение не изменится.</div>
