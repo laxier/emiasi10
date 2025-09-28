@@ -610,6 +610,20 @@ def admin_model_list(model_key):
             all_items = query.all()
             q_fold = q.casefold()
             filtered = []
+            # Prefetch address map for doctors to allow searching by LPUAddress.short_name & full address
+            try:
+                from database import LPUAddress
+                ap_ids_prefetch = {d.address_point_id for d in all_items if getattr(d, 'address_point_id', None)}
+                addr_map = {}
+                if ap_ids_prefetch:
+                    session_db_pref = get_db_session()
+                    try:
+                        addr_rows_pref = session_db_pref.query(LPUAddress).filter(LPUAddress.address_point_id.in_(ap_ids_prefetch)).all()
+                        addr_map = {a.address_point_id: a for a in addr_rows_pref}
+                    finally:
+                        session_db_pref.close()
+            except Exception:
+                addr_map = {}
             for it in all_items:
                 hay = []
                 if getattr(it, 'name', None):
@@ -618,6 +632,16 @@ def admin_model_list(model_key):
                     hay.append(it.ar_speciality_name.casefold())
                 if getattr(it, 'doctor_api_id', None):
                     hay.append(str(it.doctor_api_id).casefold())
+                # Address fields
+                apx = getattr(it, 'address_point_id', None)
+                if apx and apx in addr_map:
+                    aobj = addr_map.get(apx)
+                    if aobj and getattr(aobj, 'short_name', None):
+                        try: hay.append(aobj.short_name.casefold())
+                        except Exception: pass
+                    if aobj and getattr(aobj, 'address', None):
+                        try: hay.append(aobj.address.casefold())
+                        except Exception: pass
                 if any(q_fold in v for v in hay):
                     filtered.append(it)
             total_found = len(filtered)
