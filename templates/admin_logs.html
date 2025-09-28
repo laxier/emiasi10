@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Админ логи{% endblock %}
+
+{% block nav_links %}
+    <a class="nav-link" href="{{ url_for('admin_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
+    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
+{% endblock %}
+
+{% block content %}
+        <h1>Логи всех пользователей</h1>
+    <form method="get" class="row g-2 mb-3">
+            <div class="col-auto">
+                <input type="text" name="user" class="form-control form-control-sm" placeholder="user id" value="{{ selected_user_id if selected_user_id else '' }}">
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-sm btn-primary">Фильтр</button>
+            </div>
+            <div class="col-auto">
+                {% if show_all %}
+                    <a href="{{ url_for('admin_logs') }}" class="btn btn-sm btn-outline-secondary">Только выбранный</a>
+                {% else %}
+                    <a href="{{ url_for('admin_logs') }}?all=1" class="btn btn-sm btn-outline-secondary">Все</a>
+                {% endif %}
+            </div>
+        </form>
+        <table class="table table-striped table-sm align-middle">
+            <thead>
+                <tr>
+                    {% if show_all %}<th>Пользователь</th>{% endif %}
+                    <th>Метка / время</th>
+                    <th>Действие</th>
+                    <th>Детали</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                    <tr class="{% if log.status in ['error','fail'] %}table-danger{% elif log.status == 'warning' %}table-warning{% endif %}">
+                        {% if show_all %}<td>{{ log.telegram_user_id }}</td>{% endif %}
+                        <td class="font-monospace">
+                            {% set st = log.status if log.status else 'info' %}
+                            {% if st in ['fail'] %}{% set st = 'error' %}{% endif %}
+                            {% if st == 'success' %}{% set st = 'success' %}{% elif st == 'warning' %}{% set st = 'warn' %}{% elif st in ['error','fail'] %}{% set st = 'error' %}{% elif st == 'info' %}{% set st = 'info' %}{% endif %}
+                            {% set src = log.source if log.source else '?' %}
+                            [{{ st|upper }} {{ src|upper }}] {{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+                        </td>
+                        <td>{{ log.action }}</td>
+                        <td class="text-break small">{{ log.details or '' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}
