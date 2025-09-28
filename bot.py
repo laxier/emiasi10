@@ -2185,7 +2185,7 @@ scheduler = AsyncIOScheduler()
 import json
 
 
-async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo):
+async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo, use_appointment: bool = True):
     """
     Получает расписание для врача, пробуя разные appointment_id.
     1. Обновляем актуальные записи из API.
@@ -2247,46 +2247,49 @@ async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo):
 
     # Проверяем, есть ли appointment_id из API для этого врача или эквивалентных специальностей
     appointment_id = None
-    if appointments_data:
+    if use_appointment and appointments_data:
         appointments = appointments_data.get("appointment", [])
         for appt in appointments:
-            # Сначала проверяем, есть ли запись к этому конкретному врачу
             if str(appt.get("availableResourceId", "")) == str(doctor.doctor_api_id):
                 appt_id = appt.get("appointmentId") or appt.get("id")
                 if appt_id:
                     try:
                         appointment_id = int(appt_id)
-                        print(f"Найден appointment_id {appointment_id} для врача {doctor.doctor_api_id}")
                         break
                     except (ValueError, TypeError):
                         pass
-            # Если не нашли для этого врача, проверяем по специальности
             if appointment_id is None:
                 appt_spec_id = extract_speciality_id_from_appointment(appt)
-                # print(f"Проверяем запись с specialityId: {appt_spec_id}, appointmentId: {appt.get('appointmentId') or appt.get('id')}")
                 if appt_spec_id in get_equivalent_speciality_codes(doctor.ar_speciality_id):
                     appt_id = appt.get("appointmentId") or appt.get("id")
                     if appt_id:
                         try:
                             appointment_id = int(appt_id)
-                            print(f"Найден appointment_id {appointment_id} по специальности {appt_spec_id}")
                             break
                         except (ValueError, TypeError):
                             pass
-    
-    logging.info(f"appointment_id found: {appointment_id}")
-    print(f"Используем appointment_id: {appointment_id} для специальности {doctor.ar_speciality_id}")
-    if appointment_id:
+    if use_appointment:
+        logging.info(f"appointment_id candidate: {appointment_id}")
+    if use_appointment and appointment_id:
         # Пытаемся с appointment_id, но если пусто или ошибка – пробуем без и очищаем устаревший appointment_id
         need_clear_links = False
         try:
             schedule_response = get_available_resource_schedule_info(
                 user_id, available_resource_id=doctor.doctor_api_id, complex_resource_id=doctor.complex_resource_id, appointment_id=appointment_id
             )
+            top_desc = schedule_response.get("Описание") if schedule_response else None
+            payload_desc = None
+            if schedule_response and schedule_response.get("payload"):
+                payload_desc = schedule_response.get("payload").get("Описание")
+            combined_desc = top_desc or payload_desc or ""
+            booked_phrase = "Пациент уже записан"
             if schedule_response and schedule_response.get("payload") and schedule_response.get("payload").get("scheduleOfDay"):
                 return schedule_response
+            elif combined_desc.startswith(booked_phrase):
+                logging.info("Сообщение 'Пациент уже записан...' -> повтор без appointment_id")
+                need_clear_links = True
             else:
-                logging.info("Переходим к запросу без appointment_id (пустой payload или ошибка)")
+                logging.info("Переход без appointment_id: пустой payload/нет scheduleOfDay")
                 need_clear_links = True
         except Exception as e:
             logging.error(f"Ошибка при запросе с appointment_id {appointment_id}: {e}. Пробуем без appointment_id")
@@ -2384,10 +2387,12 @@ async def check_schedule_updates():
                 old_data = []
         else:
             old_data = []
-        schedule_response = await get_schedule_for_doctor(session, user_id, doctor)
+
+        # Получаем актуальное расписание (для избранных/отслеживания не используем appointment_id)
+        schedule_response = await get_schedule_for_doctor(session, user_id, doctor, use_appointment=False)
 
         if not schedule_response or not schedule_response.get("payload"):
-            continue
+            continue  # переход к следующему отслеживанию
 
         new_schedule = schedule_response.get("payload").get("scheduleOfDay") or []
         new_schedule_json = json.dumps(new_schedule, ensure_ascii=False)

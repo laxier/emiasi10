@@ -16,6 +16,20 @@ SessionLocal = sessionmaker(bind=engine)
 
 Base = declarative_base()
 
+from sqlalchemy.exc import OperationalError
+
+def ensure_migrations():
+    """Apply lightweight in-place migrations (idempotent)."""
+    with engine.connect() as conn:
+        try:
+            # Add issued_at column if it does not exist
+            conn.execute(text("ALTER TABLE user_tokens ADD COLUMN issued_at DATETIME"))
+        except Exception:
+            # Column already exists or table missing; ignore
+            pass
+
+ensure_migrations()
+
 class UserToken(Base):
     __tablename__ = 'user_tokens'
     id = Column(Integer, primary_key=True, index=True)
@@ -293,18 +307,35 @@ import json
 # Пользователь запросил эквивалентность только для ВОП / терапевт.
 # Если нужно ограничить: оставляем только реальную группу (например: 69,209,2) и исключаем 602.
 SPECIALITY_ALIASES = {
-    # ВОП / терапевт: оставляем взаимную эквивалентность (если 602 сюда действительно относится)
+    # ВОП / терапевт (пример прежней группы)
     "69": {"69", "602"},
     "602": {"69", "602"},
 }
 
+# Набор кодов дерматологии, которые считаем эквивалентными между собой.
+# Если потребуется пополнить – просто добавьте сюда код.
+DERMATOLOGY_EQUIV = {
+    # Примерные коды (добавьте/скорректируйте в соответствии с реальными arSpecialityId):
+    # 2028 встречается в коде как "Заболевание кожи ..." – оставляем.
+    "2028",
+    # Добавьте иные dermatology-related коды ниже (строками):
+    # "XXXX",
+}
+
 def get_equivalent_speciality_codes(code):
-    """
-    Возвращает множество эквивалентных кодов специальности.
-    Например: 69 <-> 602. Для остальных возвращает сам код.
+    """Возвращает множество эквивалентных кодов специальности.
+
+    Логика:
+      1. Если код входит в группу дерматологии (DERMATOLOGY_EQUIV) – возвращаем весь набор дерматологии.
+      2. Иначе если код есть в статическом словаре SPECIALITY_ALIASES – возвращаем соответствующее множество.
+      3. Иначе – возвращаем singleton с самим кодом (если непустой).
     """
     code_str = str(code) if code is not None else ""
-    return SPECIALITY_ALIASES.get(code_str, {code_str} if code_str else set())
+    if not code_str:
+        return set()
+    if code_str in DERMATOLOGY_EQUIV:
+        return set(DERMATOLOGY_EQUIV)
+    return SPECIALITY_ALIASES.get(code_str, {code_str})
 
 def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
     """
