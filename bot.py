@@ -2275,57 +2275,55 @@ async def get_schedule_for_doctor(session, user_id: int, doctor: DoctorInfo, use
     if use_appointment:
         logging.info(f"appointment_id candidate: {appointment_id}")
     if use_appointment and appointment_id:
-        # Пытаемся с appointment_id, но если пусто или ошибка – пробуем без и очищаем устаревший appointment_id
-        need_clear_links = False
+        # Логика по требованию: сначала пробуем БЕЗ appointment_id.
+        # Если приходит сообщение "Пациент уже записан на прием к врачу данной специальности",
+        # тогда повторяем запрос уже С appointment_id.
+        phrase = "Пациент уже записан на прием к врачу данной специальности"
         try:
-            schedule_response = get_available_resource_schedule_info(
-                user_id, available_resource_id=doctor.doctor_api_id, complex_resource_id=doctor.complex_resource_id, appointment_id=appointment_id
+            base_response = get_available_resource_schedule_info(
+                user_id,
+                doctor.doctor_api_id,
+                doctor.complex_resource_id,
             )
-            top_desc = schedule_response.get("Описание") if schedule_response else None
-            payload_desc = None
-            if schedule_response and schedule_response.get("payload"):
-                payload_desc = schedule_response.get("payload").get("Описание")
-            combined_desc = top_desc or payload_desc or ""
-            booked_phrase = "Пациент уже записан"
-            if schedule_response and schedule_response.get("payload") and schedule_response.get("payload").get("scheduleOfDay"):
-                return schedule_response
-            elif combined_desc.startswith(booked_phrase):
-                logging.info("Сообщение 'Пациент уже записан...' -> повтор без appointment_id")
-                need_clear_links = True
-            else:
-                logging.info("Переход без appointment_id: пустой payload/нет scheduleOfDay")
-                need_clear_links = True
-        except Exception as e:
-            logging.error(f"Ошибка при запросе с appointment_id {appointment_id}: {e}. Пробуем без appointment_id")
-            need_clear_links = True
-        # Очищаем устаревший appointment_id в связях пользователя
-        if need_clear_links:
-            try:
-                eq_codes = set(get_equivalent_speciality_codes(doctor.ar_speciality_id)) if doctor.ar_speciality_id else set()
-                if doctor.ar_speciality_id:
-                    eq_codes.add(doctor.ar_speciality_id)
-                links_to_clear = session.query(UserDoctorLink).filter(
-                    UserDoctorLink.telegram_user_id == user_id,
-                    UserDoctorLink.doctor_speciality.in_(eq_codes)
-                ).all()
-                cleared = 0
-                for l in links_to_clear:
-                    if l.appointment_id:
-                        l.appointment_id = None
-                        cleared += 1
-                if cleared:
-                    session.commit()
-                    logging.info(f"Сброшено устаревших appointment_id: {cleared} для user {user_id}")
-            except Exception as ce:
-                logging.warning(f"Не удалось очистить устаревшие appointment_id: {ce}")
-        # fallback: без appointment_id
+        except Exception as e_base:
+            logging.error(f"Ошибка базового запроса без appointment_id: {e_base}; пробуем сразу с appointment_id")
+            base_response = None
+
+        if base_response:
+            # Проверяем наличие расписания
+            payload = base_response.get("payload") if isinstance(base_response, dict) else None
+            schedule_days = payload.get("scheduleOfDay") if payload else None
+            if schedule_days:
+                return base_response  # уже есть расписание
+            # Извлекаем описание
+            desc = base_response.get("Описание") if isinstance(base_response, dict) else None
+            if not desc and payload:
+                desc = payload.get("Описание")
+            if desc and desc.strip().startswith(phrase):
+                # Повторяем с appointment_id
+                try:
+                    second_response = get_available_resource_schedule_info(
+                        user_id,
+                        available_resource_id=doctor.doctor_api_id,
+                        complex_resource_id=doctor.complex_resource_id,
+                        appointment_id=appointment_id,
+                    )
+                    return second_response
+                except Exception as e_appt:
+                    logging.error(f"Ошибка при повторном запросе с appointment_id {appointment_id}: {e_appt}")
+                    return base_response
+            # Иная ошибка / отсутствие расписания — возвращаем что получили (сырой ответ требовался)
+            return base_response
+        # Если базового ответа нет — пробуем только с appointment_id
         try:
-            fallback_response = get_available_resource_schedule_info(
-                user_id, available_resource_id=doctor.doctor_api_id, complex_resource_id=doctor.complex_resource_id
+            return get_available_resource_schedule_info(
+                user_id,
+                available_resource_id=doctor.doctor_api_id,
+                complex_resource_id=doctor.complex_resource_id,
+                appointment_id=appointment_id,
             )
-            return fallback_response
-        except Exception as e2:
-            logging.error(f"Ошибка при запросе без appointment_id после ошибки с appointment_id: {e2}")
+        except Exception as e_final:
+            logging.error(f"Не удалось получить расписание ни без, ни с appointment_id: {e_final}")
             return None
 
     # Если нет appointment_id, пробуем без
@@ -2392,8 +2390,8 @@ async def check_schedule_updates():
         else:
             old_data = []
 
-        # Получаем актуальное расписание (для избранных/отслеживания не используем appointment_id)
-        schedule_response = await get_schedule_for_doctor(session, user_id, doctor, use_appointment=False)
+        # Получаем актуальное расписание с логикой повторного запроса при сообщении об активной записи
+        schedule_response = await get_schedule_for_doctor(session, user_id, doctor, use_appointment=True)
 
         if not schedule_response or not schedule_response.get("payload"):
             continue  # переход к следующему отслеживанию
