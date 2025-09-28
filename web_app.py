@@ -604,6 +604,26 @@ def admin_model_list(model_key):
                     filtered.append(it)
             total_found = len(filtered)
             items = filtered[:500]
+            # Prefetch адресов для результата поиска
+            try:
+                from database import LPUAddress
+                ap_ids = {d.address_point_id for d in items if getattr(d, 'address_point_id', None)}
+                if ap_ids:
+                    session_db2 = get_db_session()
+                    try:
+                        addr_rows = session_db2.query(LPUAddress).filter(LPUAddress.address_point_id.in_(ap_ids)).all()
+                        amap = {a.address_point_id: a for a in addr_rows}
+                        for d in items:
+                            ap = getattr(d, 'address_point_id', None)
+                            short_addr = ''
+                            if ap and ap in amap:
+                                # Используем ТОЛЬКО short_name из LPUAddress без попытки сокращать полный адрес
+                                short_addr = amap[ap].short_name or ''
+                            setattr(d, 'resolved_short_address', short_addr)
+                    finally:
+                        session_db2.close()
+            except Exception:
+                pass
             session_db.close()
             return render_template('admin_model_list.html', cfg=cfg, model_key=model_key, items=items, q=q, total_found=total_found)
         except Exception:
@@ -617,6 +637,28 @@ def admin_model_list(model_key):
         total_found = None
 
     items = query.limit(500).all()
+    # Prefetch короткий адрес для doctor: подтягиваем LPUAddress по address_point_id
+    if model_key == 'doctor':
+        try:
+            from database import LPUAddress
+            # Соберём уникальные address_point_id
+            ap_ids = {d.address_point_id for d in items if getattr(d, 'address_point_id', None)}
+            if ap_ids:
+                session_db2 = get_db_session()
+                try:
+                    addr_rows = session_db2.query(LPUAddress).filter(LPUAddress.address_point_id.in_(ap_ids)).all()
+                    amap = {a.address_point_id: a for a in addr_rows}
+                    for d in items:
+                        ap = getattr(d, 'address_point_id', None)
+                        short_addr = ''
+                        if ap and ap in amap:
+                            # Только short_name; не обрезаем полный адрес до города.
+                            short_addr = amap[ap].short_name or ''
+                        setattr(d, 'resolved_short_address', short_addr)
+                finally:
+                    session_db2.close()
+        except Exception:
+            pass
     session_db.close()
     return render_template('admin_model_list.html', cfg=cfg, model_key=model_key, items=items, q=q, total_found=total_found)
 
@@ -711,6 +753,106 @@ def admin_model_edit(model_key, obj_id):
     # For display we just pass object
     session_db.close()
     return render_template('admin_model_form.html', cfg=cfg, model_key=model_key, obj=obj)
+
+@app.route('/admin/tools/backfill_lpu_short_names', methods=['POST','GET'])
+def admin_backfill_lpu_short_names():
+    """Заполняет LPUAddress.short_name где он пуст, используя /getDoctorsInfo.
+
+    Алгоритм:
+      1. Находим LPUAddress без short_name.
+      2. Для связанных DoctorInfo собираем пары (speciality_id, lpu_id).
+      3. Для каждой пары вызываем getDoctorsInfo (c lpuId если есть).
+      4. Прогоняем все availableResources через save_or_update_doctor -> обновляется short_name.
+    """
+    if not _admin_required():
+        return redirect(url_for('login'))
+    # Пользуемся текущим админским telegram_user_id для API токенов
+    # Веб-сессия хранит 'user_id' (telegram_user_id), используем его
+    admin_uid = session.get('user_id')
+    if not admin_uid:
+        flash('Нет telegram_user_id в сессии — авторизуйтесь как админ.', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    # Проверим наличие токенов/профиля
+    s_chk = get_db_session()
+    try:
+        from database import get_tokens, get_profile
+        if not get_tokens(s_chk, admin_uid) or not get_profile(s_chk, admin_uid):
+            flash('У админ-пользователя отсутствуют токены или профиль. Выполните /auth в боте.', 'danger')
+            return redirect(url_for('admin_dashboard'))
+    finally:
+        s_chk.close()
+
+    session_db = get_db_session()
+    from database import LPUAddress, save_or_update_doctor
+    try:
+        # Собираем адреса без short_name
+        missing = session_db.query(LPUAddress).filter(or_(LPUAddress.short_name == None, LPUAddress.short_name == '')).all()
+        if not missing:
+            flash('Нет адресов без short_name — ничего делать не нужно.', 'success')
+            return redirect(url_for('admin_model_list', model_key='doctor'))
+        # Мапа address_point_id -> (specialities, lpu_id)
+        addr_to_specs = {}
+        for doc in session_db.query(DoctorInfo).filter(DoctorInfo.address_point_id != None).all():
+            ap = doc.address_point_id
+            if not ap:
+                continue
+            addr_to_specs.setdefault(ap, {'specs': set(), 'lpu': None})
+            if doc.ar_speciality_id:
+                addr_to_specs[ap]['specs'].add(doc.ar_speciality_id)
+        # Собираем пары (spec, lpu_id) только для тех address_point_id где short_name пуст
+        pairs = set()
+        for addr in missing:
+            meta = addr_to_specs.get(addr.address_point_id)
+            if not meta:
+                continue
+            lpu_id_val = addr.lpu_id
+            for spec in meta['specs']:
+                pairs.add((spec, lpu_id_val))
+        if not pairs:
+            flash('Не удалось собрать пары speciality/lpu для backfill.', 'warning')
+            return redirect(url_for('admin_model_list', model_key='doctor'))
+
+        from emias_api import get_doctors_info
+        updated_addresses_before = {a.address_point_id: (a.short_name or '') for a in missing}
+        api_calls = 0
+        updated_after = set()
+        # Вспомогательная сессия для сохранения
+        for spec, lpu in pairs:
+            try:
+                resp = get_doctors_info(admin_uid, speciality_id=[str(spec)], lpu_id=str(lpu) if lpu else None)
+                api_calls += 1
+            except Exception as e:
+                flash(f'Ошибка API getDoctorsInfo spec={spec} lpu={lpu}: {e}', 'danger')
+                continue
+            if not resp or not resp.get('payload'):
+                continue
+            payload = resp['payload']
+            blocks = payload.get('doctorsInfo', [])
+            not_av = payload.get('notAvailableDoctors', [])
+            for block in blocks:
+                block_lpu_id = block.get('lpuId') or block.get('lpuID')
+                block_addr = block.get('defaultAddress') or block.get('lpuAddress')
+                block_lpu_short = block.get('lpuShortName') or block.get('lpu_short_name')
+                for resource in block.get('availableResources', []):
+                    if block_lpu_id and not resource.get('lpuId'):
+                        resource['lpuId'] = block_lpu_id
+                    if block_addr and not (resource.get('lpuAddress') or resource.get('defaultAddress')):
+                        resource['lpuAddress'] = block_addr
+                    if block_lpu_short and not resource.get('lpuShortName'):
+                        resource['lpuShortName'] = block_lpu_short
+                    save_or_update_doctor(session_db, admin_uid, resource)
+            for doc in not_av:
+                save_or_update_doctor(session_db, admin_uid, doc)
+            session_db.commit()
+        # Повторно загрузим затронутые адреса
+        refetched = session_db.query(LPUAddress).filter(or_(LPUAddress.address_point_id.in_(updated_addresses_before.keys()))).all()
+        filled = [a for a in refetched if a.short_name]
+        flash(f'Backfill завершён: адресов без short_name исходно={len(missing)}, API вызовов={api_calls}, заполнено теперь={len(filled)}', 'success')
+    except Exception as e:
+        flash(f'Backfill ошибка: {e}', 'danger')
+    finally:
+        session_db.close()
+    return redirect(url_for('admin_model_list', model_key='doctor'))
 
 @app.route('/admin/model/<model_key>/<int:obj_id>/delete', methods=['POST'])
 def admin_model_delete(model_key, obj_id):
@@ -1467,21 +1609,38 @@ def bulk_track():
     Пользователь вводит список doctor_id (через пробел, запятую или новую строку) и общие правила.
     Использование: позволяет сразу подписаться на несколько кабинетов (например ЭКГ) или несколько ресурсов СМАД.
     """
+    import re  # вынесено из ветки POST, чтобы не было UnboundLocalError при использовании re в GET
     if 'user_id' not in session:
         return redirect(url_for('login'))
     user_id = session['user_id']
     if request.method == 'POST':
         ids_raw = request.form.get('doctor_ids','')
         stop_on_first = request.form.get('stop_on_first') == '1'
+        auto_booking_all = request.form.get('auto_booking') == '1'
         rules_raw = request.form.get('rules','')
         # Парсинг doctor_ids — допускаем разделители: пробел, запятая, новая строка
-        import re
         doc_ids = []
         for tok in re.split(r'[\s,;]+', ids_raw.strip()):
             if tok:
                 doc_ids.append(tok)
         # Правила аналогично add_track: строка с правилами через запятую
-        rule_list = [r.strip() for r in (rules_raw.split(',') if rules_raw else []) if r.strip()]
+        raw_rules_tokens = [r.strip() for r in (rules_raw.split(',') if rules_raw else []) if r.strip()]
+        # Дополнительно разрешаем ввод без запятых: пробельное разделение если нет запятых вообще
+        if rules_raw and ',' not in rules_raw and '\n' not in rules_raw:
+            # например: "понедельник вторник 10:00-12:00" -> разобьём и сохраним
+            extra = [t for t in rules_raw.split() if t]
+            # если это дало больше токенов и исходный список короткий – используем
+            if len(extra) > len(raw_rules_tokens):
+                raw_rules_tokens = extra
+        # Преобразуем одиночные дни недели без интервала в полный день 00:00-23:59
+        WEEKDAYS_SIMPLE = {'понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'}
+        norm_rules = []
+        for r in raw_rules_tokens:
+            if ' ' not in r and '-' not in r and r.lower() in WEEKDAYS_SIMPLE:
+                norm_rules.append(f"{r.lower()} 00:00-23:59")
+            else:
+                norm_rules.append(r)
+        rule_list = norm_rules
         # merge + dedup
         rule_list = _merge_rules(rule_list)
         seen_rules = set()
@@ -1493,6 +1652,12 @@ def bulk_track():
         sess = get_db_session()
         added = 0
         updated = 0
+        # Генерируем batch_id если выбрано более 1 врача и включены stop_on_first или auto_booking
+        import uuid
+        batch_id = None
+        preliminary_ids = [i for i in doc_ids if i]
+        if len(preliminary_ids) > 1 and (stop_on_first or auto_booking_all):
+            batch_id = uuid.uuid4().hex
         try:
             from database import UserTrackedDoctor, DoctorInfo
             for did in doc_ids:
@@ -1501,6 +1666,11 @@ def bulk_track():
                 track = sess.query(UserTrackedDoctor).filter_by(telegram_user_id=user_id, doctor_api_id=did).first()
                 if not track:
                     track = UserTrackedDoctor(telegram_user_id=user_id, doctor_api_id=did, tracking_rules=dedup_rules.copy(), active=True)
+                    if auto_booking_all:
+                        track.auto_booking = True
+                    if batch_id:
+                        track.bulk_batch_id = batch_id
+                        track.stop_after_first = stop_on_first
                     sess.add(track)
                     added += 1
                     # лог
@@ -1526,6 +1696,19 @@ def bulk_track():
                         except Exception:
                             pass
                         updated += 1
+                    # включаем автозапись для существующего если попросили
+                    if batch_id:
+                        # Подтягиваем batch параметры для существующего отслеживания если ещё не выставлены
+                        if not track.bulk_batch_id:
+                            track.bulk_batch_id = batch_id
+                        if stop_on_first:
+                            track.stop_after_first = True
+                    if auto_booking_all and not track.auto_booking:
+                        track.auto_booking = True
+                        try:
+                            log_user_action(sess, user_id, 'bulk_auto_booking_on', f'doctor={did}', source='web', status='info')
+                        except Exception:
+                            pass
                         try:
                             doc = sess.query(DoctorInfo).filter_by(doctor_api_id=did).first()
                             dname = doc.name if doc else did
@@ -1536,16 +1719,79 @@ def bulk_track():
         finally:
             sess.close()
         if added or updated:
-            extra = ' (stop after first success)' if stop_on_first else ''
+            extra_parts = []
+            if stop_on_first:
+                extra_parts.append('stop_after_first')
+            if auto_booking_all:
+                extra_parts.append('auto_booking=on')
+            extra = f" ({', '.join(extra_parts)})" if extra_parts else ''
             flash(f'Добавлено: {added}, обновлено: {updated}{extra}', 'success')
         else:
             flash('Нет изменений (все уже отслеживаются с этими правилами)', 'info')
         return redirect(url_for('user_dashboard'))
     # GET – показываем форму
     sess = get_db_session()
-    doctors = sess.query(DoctorInfo).order_by(DoctorInfo.ar_speciality_name, DoctorInfo.name).all()
-    sess.close()
-    return render_template('bulk_track.html', doctors=doctors)
+    try:
+        from database import LPUAddress, DoctorInfo
+        doctors_raw = (
+            sess.query(DoctorInfo)
+            .order_by(DoctorInfo.ar_speciality_name, DoctorInfo.name)
+            .all()
+        )
+        # Собираем адреса (full + short_name) по address_point_id (если есть)
+        addr_map = {}
+        ap_ids = [d.address_point_id for d in doctors_raw if d.address_point_id]
+        if ap_ids:
+            for addr in sess.query(LPUAddress).filter(LPUAddress.address_point_id.in_(ap_ids)).all():
+                addr_map[addr.address_point_id] = {
+                    'full': addr.address,
+                    'short': addr.short_name or ''
+                }
+        # Обогащаем временным атрибутом resolved_address + собираем специальности
+        specialties = {}
+        enriched_doctors = []
+        # эквивалентные группы для отображения (например 69 и 602)
+        equiv_map = {
+            '69': '69|602',  # ключ группы
+            '602': '69|602',
+        }
+        group_labels = {
+            '69|602': 'Врач общей практики / Терапевт',
+        }
+        for d in doctors_raw:
+            addr_info = addr_map.get(d.address_point_id) if d.address_point_id else None
+            full_addr = (addr_info or {}).get('full') or ''
+            short_addr = (addr_info or {}).get('short') or ''
+            # resolved_address оставим как полный, если нужен где-то ещё
+            setattr(d, 'resolved_address', full_addr)
+            raw_code = d.ar_speciality_id or '—'
+            raw_name = d.ar_speciality_name or 'Без специальности'
+            group_key = equiv_map.get(raw_code, raw_code)
+            # Имя группы: если есть в group_labels – берем его, иначе оригинальное имя
+            group_name = group_labels.get(group_key, raw_name)
+            sp = specialties.setdefault(group_key, {"code": group_key, "name": group_name, "count": 0, "codes": set()})
+            sp["count"] += 1
+            sp['codes'].add(raw_code)
+            enriched_doctors.append({
+                'id': d.doctor_api_id,
+                'name': d.name,
+                'spec_code': group_key,  # фронт будет фильтровать по групповому ключу
+                'spec_name': group_name,
+                'address_point_id': d.address_point_id,
+                'address': short_addr or full_addr,  # используем короткое имя если есть
+                'full_address': full_addr,
+                'raw_spec_code': raw_code,
+                'raw_spec_name': raw_name,
+            })
+        # Преобразуем множество codes в отсортированный список для сериализации
+        for sp in specialties.values():
+            sp['codes'] = sorted(sp['codes'])
+        specialties_list = sorted(specialties.values(), key=lambda x: x['name'])
+        if not enriched_doctors:
+            app.logger.warning("bulk_track: no doctors found (doctor_info table empty or filter logic issue)")
+        return render_template('bulk_track.html', doctors_json=enriched_doctors, specialties=specialties_list, total_doctors=len(enriched_doctors))
+    finally:
+        sess.close()
 
 
 if __name__ == '__main__':

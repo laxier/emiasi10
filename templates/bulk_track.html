@@ -1,220 +1,244 @@
-{% extends "base.html" %}
-
+{% extends 'base.html' %}
 {% block title %}Массовое отслеживание{% endblock %}
-
-{% block nav_links %}
-    <a class="nav-link" href="{{ url_for('user_dashboard') }}"><i class="fas fa-home"></i> Назад</a>
-    <a class="nav-link" href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt"></i> Выйти</a>
-{% endblock %}
-
 {% block content %}
-<h1><i class="fas fa-layer-group"></i> Массовое отслеживание</h1>
-<p class="text-muted">Введите список doctor_id (каждый на новой строке, через пробел или запятую) и общие правила времени. Можно фильтровать по адресу и выбрать нужные ресурсы галочками. Опция «Остановиться после первой удачной записи» пригодится для кабинетов СМАД.</p>
-<form method="post">
-  <div class="row g-3">
-    <div class="col-md-5">
-      <label class="form-label">Doctor IDs</label>
-      <textarea name="doctor_ids" class="form-control" rows="12" placeholder="123456789\n123456790\n..."></textarea>
-      <div class="form-text">Разделяйте doctor_id пробелом, новой строкой, запятой или точкой с запятой.</div>
-      <details class="mt-2">
-        <summary class="small">Выбрать из списка (фильтр по адресу / названию)</summary>
-        <input type="text" id="filterInput" class="form-control form-control-sm mb-2" placeholder="Фильтр по адресу или имени..." />
-        <div class="border rounded p-2" style="max-height:260px;overflow:auto;">
-          <table class="table table-sm table-hover align-middle mb-0">
-            <thead>
-              <tr class="small"><th><input type="checkbox" id="chkAll" /></th><th>ID</th><th>Имя</th><th>Спец</th><th>Адрес</th><th>addrPt</th></tr>
-            </thead>
-            <tbody id="doctorTableBody">
-            {% for d in doctors %}
-              <tr class="small doctor-row" data-id="{{ d.doctor_api_id }}" data-address="{{ (d.address or '')|e }}" data-name="{{ (d.name or '')|e }}" data-apid="{{ d.address_point_id }}">
-                <td><input type="checkbox" class="docChk" value="{{ d.doctor_api_id }}" /></td>
-                <td><code>{{ d.doctor_api_id }}</code></td>
-                <td>{{ d.name }}</td>
-                <td>{{ d.ar_speciality_name }}</td>
-                <td style="max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="{{ d.address }}">{{ d.address or '' }}</td>
-                <td><small>{{ d.address_point_id or '' }}</small></td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <div class="mt-2 d-flex gap-2">
-          <button type="button" id="appendSelected" class="btn btn-sm btn-outline-primary">Добавить выбранные ID</button>
-          <button type="button" id="clearSelected" class="btn btn-sm btn-outline-secondary">Снять выделение</button>
-        </div>
-      </details>
-      <div class="form-check mt-3">
-        <input class="form-check-input" type="checkbox" value="1" id="stopOnFirst" name="stop_on_first" />
-        <label class="form-check-label" for="stopOnFirst">Остановиться после первой успешной записи (логика для будущей автозаписи)</label>
+<h4 class="mb-3">Массовое отслеживание</h4>
+<p class="text-muted mb-4">Шаги: 1) выберите специальность → 2) выберите адрес (фильтр) → 3) отметьте нужные ресурсы → 4) введите правила → 5) отправьте.</p>
+<form method="post" id="bulkTrackForm">
+  <div class="row g-4">
+    <div class="col-12 col-lg-4">
+  <h5 class="mb-2">1. Специальность </span></h5>
+      <select id="specialitySelect" class="form-select mb-2">
+        <option value="">— выберите специальность —</option>
+        {% for sp in specialties %}
+          <option value="{{ sp.code }}">{{ sp.name }} ({{ sp.count }})</option>
+        {% endfor %}
+      </select>
+  <div class="small text-muted">Можно пропустить: тогда в списке ниже будут все врачи (всего: {{ total_doctors or 0 }}). Фильтр адреса работает всегда.</div>
+      <hr />
+      <h5 class="mb-2">2. Фильтр по адресу</h5>
+      <input type="text" id="addressFilter" class="form-control mb-2" placeholder="Например: Ф 3" />
+      <div class="d-flex gap-2 mb-3">
+        <button type="button" id="selectAllVisible" class="btn btn-sm btn-outline-primary">Выбрать все видимые</button>
+        <button type="button" id="clearAllVisible" class="btn btn-sm btn-outline-secondary">Снять</button>
       </div>
     </div>
-    <div class="col-md-7">
-      <label class="form-label">Правила (как в одиночном добавлении)</label>
-      <div id="rulesBuilder">
-        <div class="row g-2 align-items-end mb-2">
-          <div class="col-md-3">
-            <label class="form-label small mb-1">Тип</label>
-            <select id="ruleType" class="form-select form-select-sm">
-              <option value="weekday">День недели</option>
-              <option value="date">Конкретная дата</option>
-              <option value="relative">Сегодня/Завтра</option>
-              <option value="range">Диапазон дат</option>
-            </select>
-          </div>
-          <div class="col-md-3" id="weekdayWrapper">
-            <label class="form-label small mb-1">День</label>
-            <select id="weekday" class="form-select form-select-sm">
-              <option value="понедельник">Понедельник</option>
-              <option value="вторник">Вторник</option>
-              <option value="среда">Среда</option>
-              <option value="четверг">Четверг</option>
-              <option value="пятница">Пятница</option>
-              <option value="суббота">Суббота</option>
-              <option value="воскресенье">Воскресенье</option>
-            </select>
-          </div>
-          <div class="col-md-3 d-none" id="dateWrapper">
-            <label class="form-label small mb-1">Дата</label>
-            <input type="date" id="dateValue" class="form-control form-control-sm" />
-          </div>
-          <div class="col-md-3 d-none" id="relativeWrapper">
-            <label class="form-label small mb-1">Относительно</label>
-            <select id="relativeValue" class="form-select form-select-sm">
-              <option value="сегодня">Сегодня</option>
-              <option value="завтра">Завтра</option>
-            </select>
-          </div>
-          <div class="col-md-4 d-none" id="rangeWrapper">
-            <label class="form-label small mb-1">Диапазон</label>
-            <div class="d-flex flex-column gap-1">
-              <input type="date" id="rangeStart" class="form-control form-control-sm" />
-              <div class="d-flex gap-2 align-items-center">
-                <span class="small">Дней</span>
-                <input type="range" id="rangeDays" min="1" max="30" value="1" class="form-range" />
-              </div>
-              <div class="small text-muted" id="rangeInfo">Выберите дату начала</div>
-            </div>
-          </div>
-          <div class="col-md-4">
-            <label class="form-label small mb-1">Время</label>
-            <div class="d-flex gap-2 mb-1">
-              <input type="time" id="timeFrom" class="form-control form-control-sm" value="09:00" />
-              <input type="time" id="timeTo" class="form-control form-control-sm" value="13:00" />
-            </div>
-            <select id="presetRange" class="form-select form-select-sm mb-1">
-              <option value="">Выбрать...</option>
-              <option value="08:00-12:00">08:00-12:00</option>
-              <option value="09:00-13:00">09:00-13:00</option>
-              <option value="10:00-14:00">10:00-14:00</option>
-              <option value="14:00-18:00">14:00-18:00</option>
-              <option value="16:00-20:00">16:00-20:00</option>
-            </select>
-            <div class="d-flex flex-wrap gap-1 small">
-              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="08:00-11:00">08-11</button>
-              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="11:00-14:00">11-14</button>
-              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="12:00-16:00">12-16</button>
-              <button type="button" class="btn btn-outline-primary btn-sm quick" data-range="16:00-20:00">16-20</button>
-            </div>
-          </div>
-          <div class="col-md-2">
-            <button type="button" id="addRuleBtn" class="btn btn-success w-100 btn-sm"><i class="fas fa-plus"></i> Правило</button>
-          </div>
-        </div>
-        <input type="hidden" name="rules" id="rulesInput" />
-        <div id="rulesList" class="mb-3"></div>
+    <div class="col-12 col-lg-5">
+      <h5 class="mb-2">3. Ресурсы</h5>
+      <div class="border rounded p-2" style="max-height:420px;overflow:auto;">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead>
+            <tr class="small"><th style="width:32px;"></th><th>Врач / Адрес</th></tr>
+          </thead>
+          <tbody id="resourcesBody"></tbody>
+        </table>
       </div>
-      <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Применить</button>
+      <div class="mt-2 small text-muted" id="resourcesSummary">0/0 выбрано</div>
+    </div>
+    <div class="col-12 col-lg-3">
+      <h5 class="mb-2">4. Правила</h5>
+      <textarea name="rules" id="rulesTextarea" class="form-control mb-2" rows="8" placeholder="понедельник 08:00-12:00, вторник 09:00-13:00"></textarea>
+      <div class="form-text mb-3">Через запятую. Примеры:<br><code>понедельник 08:00-12:00</code><br><code>2025-10-05 09:00-11:00</code></div>
+      <!-- stop_on_first всегда включён по умолчанию (галочку убрали) -->
+      <input type="hidden" name="stop_on_first" value="1" />
+      <div class="form-check mb-3">
+        <input class="form-check-input" type="checkbox" value="1" id="autoBooking" name="auto_booking" checked />
+        <label class="form-check-label" for="autoBooking">Включить автозапись для всех выбранных</label>
+      </div>
+      <button type="submit" class="btn btn-primary w-100 mb-2"><i class="fas fa-save"></i> Записать отслеживание</button>
+      <div class="small text-muted">Подтверждение теперь внизу страницы.</div>
+    </div>
+  </div>
+  <!-- Bottom confirmation block -->
+  <div class="mt-4 pt-3 border-top">
+    <h5 class="mb-2">5. Подтверждение</h5>
+    <div class="d-flex align-items-center gap-2 mb-2 small">
+      <span class="badge bg-secondary" id="summaryBadge">0 выбрано</span>
+      <button type="button" class="btn btn-sm btn-outline-primary" id="copyFioRulesBtn">Копировать список</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleRawBtn" data-state="hidden">IDs</button>
+    </div>
+    <div id="selectedBadges" class="mb-2 small" style="min-height:28px;"></div>
+    <div id="fioRulesPreview" class="small font-monospace bg-light border rounded p-2 mb-2" style="max-height:120px;overflow:auto; white-space:pre;">(ничего не выбрано)</div>
+    <div id="rawContainer" class="mb-2 d-none">
+      <textarea name="doctor_ids" id="doctorIdsTextarea" class="form-control form-control-sm" rows="3" readonly placeholder="IDs"></textarea>
     </div>
   </div>
 </form>
 {% endblock %}
 
 {% block scripts %}
+<script id="doctorsData" type="application/json">{{ doctors_json|tojson|safe }}</script>
 <script>
-  // Selecting doctors by click appends id to textarea
-  const body = document.getElementById('doctorTableBody');
-  const filterInput = document.getElementById('filterInput');
-  filterInput?.addEventListener('input', ()=>{
-    const v = filterInput.value.toLowerCase();
-    body.querySelectorAll('tr.doctor-row').forEach(tr=>{
-      const addr = tr.dataset.address.toLowerCase();
-      const nm = tr.dataset.name.toLowerCase();
-      tr.style.display = (addr.includes(v) || nm.includes(v)) ? '' : 'none';
+  let ALL_DOCTORS = [];
+  // Храним выбранные id между перерисовками
+  const SELECTED_IDS = new Set();
+  // Добавим стили для удобства (динамически)
+  (function addRowSelectStyle(){
+    const style = document.createElement('style');
+    style.textContent = `#resourcesBody tr{cursor:pointer;} #resourcesBody tr.table-active{background:#e7f1ff !important;}`;
+    document.head.appendChild(style);
+  })();
+  (function initData(){
+    const el = document.getElementById('doctorsData');
+    if (!el) { console.warn('doctorsData script tag not found'); return; }
+    console.log('doctorsData text length:', el.textContent.length);
+    try { ALL_DOCTORS = JSON.parse(el.textContent) || []; } catch(e){ console.error('Failed to parse doctors JSON', e); }
+    console.log('ALL_DOCTORS loaded:', ALL_DOCTORS.length);
+    if (ALL_DOCTORS.length) console.log('Sample doctor:', ALL_DOCTORS[0]);
+    // Попробуем отрисовать сразу, если элементы уже есть
+    try { if (typeof renderResources === 'function') renderResources(); } catch(_e) {}
+  })();
+  const specialitySelect = document.getElementById('specialitySelect');
+  const addressFilter = document.getElementById('addressFilter');
+  const resourcesBody = document.getElementById('resourcesBody');
+  const doctorIdsTextarea = document.getElementById('doctorIdsTextarea');
+  const resourcesSummary = document.getElementById('resourcesSummary');
+  const selectAllVisibleBtn = document.getElementById('selectAllVisible');
+  const clearAllVisibleBtn = document.getElementById('clearAllVisible');
+  const selectedBadges = document.getElementById('selectedBadges');
+  const summaryBadge = document.getElementById('summaryBadge');
+  // copyIdsBtn убран из упрощённого UI
+  const toggleRawBtn = document.getElementById('toggleRawBtn');
+  const rawContainer = document.getElementById('rawContainer');
+  const rulesTextarea = document.getElementById('rulesTextarea');
+  const fioRulesPreview = document.getElementById('fioRulesPreview');
+  const copyFioRulesBtn = document.getElementById('copyFioRulesBtn');
+  const fioErgoPreview = null; // упразднено
+  // Аббревиатуры специальностей (можно расширять)
+  const SPEC_ABBR = {
+    '69|602': 'ВОП',
+    '2028': 'ДЕРМ', '2029': 'ДЕРМ', '2030': 'ДЕРМ', '2032': 'ДЕРМ'
+  };
+  function recomputeSelected() {
+    const ids = [];
+    resourcesBody.querySelectorAll('input.resChk:checked').forEach(chk => ids.push(chk.value));
+    // Обновляем глобальный набор
+    SELECTED_IDS.clear();
+    ids.forEach(id => SELECTED_IDS.add(id));
+    // Подсветка строк
+    resourcesBody.querySelectorAll('tr').forEach(tr => {
+      const cb = tr.querySelector('input.resChk');
+      if(!cb) return;
+      tr.classList.toggle('table-active', cb.checked);
     });
-  });
-  document.getElementById('chkAll')?.addEventListener('change', e=>{
-    const checked = e.target.checked; body.querySelectorAll('input.docChk').forEach(c=>{ if(!c.closest('tr').style.display) c.checked = checked; });
-  });
-  document.getElementById('appendSelected')?.addEventListener('click', ()=>{
-    const ta = document.querySelector('textarea[name="doctor_ids"]');
-    const ids = []; body.querySelectorAll('input.docChk:checked').forEach(c=>ids.push(c.value));
-    ids.forEach(id=>{
-      if(ta.value.indexOf(id)===-1){ ta.value += (ta.value.trim()? '\n':'') + id; }
+    doctorIdsTextarea.value = ids.join('\n');
+  const totalVisible = resourcesBody.querySelectorAll('tr').length;
+    resourcesSummary.textContent = `${ids.length}/${totalVisible} выбрано`;
+    summaryBadge.textContent = `${ids.length} выбрано`;
+    // badges render
+    selectedBadges.innerHTML = '';
+    ids.forEach(id => {
+      const doc = ALL_DOCTORS.find(d => d.id === id);
+      const display = doc ? doc.name : id;
+      const span = document.createElement('span');
+      span.className = 'badge bg-info text-dark';
+      span.style.cursor = 'pointer';
+      span.title = 'Клик чтобы убрать';
+      span.textContent = display;
+      span.addEventListener('click', () => {
+        const cb = resourcesBody.querySelector(`input.resChk[value="${id}"]`);
+        if (cb) { cb.checked = false; recomputeSelected(); }
+      });
+      selectedBadges.appendChild(span);
     });
-  });
-  document.getElementById('clearSelected')?.addEventListener('click', ()=>{
-    body.querySelectorAll('input.docChk:checked').forEach(c=>c.checked=false);
-  });
-  const ruleType = document.getElementById('ruleType');
-  const weekdayWrapper = document.getElementById('weekdayWrapper');
-  const dateWrapper = document.getElementById('dateWrapper');
-  const relativeWrapper = document.getElementById('relativeWrapper');
-  const rangeWrapper = document.getElementById('rangeWrapper');
-  const weekday = document.getElementById('weekday');
-  const dateValue = document.getElementById('dateValue');
-  const relativeValue = document.getElementById('relativeValue');
-  const rangeStart = document.getElementById('rangeStart');
-  const rangeDays = document.getElementById('rangeDays');
-  const rangeInfo = document.getElementById('rangeInfo');
-  const timeFrom = document.getElementById('timeFrom');
-  const timeTo = document.getElementById('timeTo');
-  const presetRange = document.getElementById('presetRange');
-  const rulesInput = document.getElementById('rulesInput');
-  const rulesList = document.getElementById('rulesList');
-  const addRuleBtn = document.getElementById('addRuleBtn');
-  let rules = [];
-  function sync(){ rulesInput.value = rules.join(','); }
-  function render(){
-    rulesList.innerHTML='';
-    if(!rules.length){ rulesList.innerHTML='<div class="text-muted">Правил пока нет.</div>'; return; }
-    rules.forEach((r,i)=>{
-      const div=document.createElement('div');
-      div.className='alert alert-secondary py-1 px-2 d-flex justify-content-between align-items-center';
-      div.style.fontSize='0.85rem';
-      div.innerHTML = `<span>${r}</span><button type="button" data-i="${i}" class="btn btn-sm btn-outline-danger">×</button>`;
-      rulesList.appendChild(div);
+    updateFioRulesPreview(ids);
+  }
+  function abbreviateName(full){
+    if(!full) return '';
+    const parts = full.trim().split(/\s+/);
+    if(!parts.length) return full;
+    const lastname = parts[0];
+    const initials = parts.slice(1).map(p=> p ? p[0].toUpperCase()+'.' : '').join('');
+    return lastname + (initials? '_' + initials : '');
+  }
+  function buildLines(ids){
+    return ids.map(id => {
+      const doc = ALL_DOCTORS.find(d => d.id === id);
+      return doc ? doc.name : id;
     });
   }
-  rulesList.addEventListener('click',e=>{
-    const btn=e.target.closest('button[data-i]');
-    if(!btn) return; const idx=parseInt(btn.getAttribute('data-i'),10); rules.splice(idx,1); sync(); render();
-  });
-  function updateRangeInfo(){
-    const start = rangeStart.value; const days=parseInt(rangeDays.value,10);
-    if(!start){ rangeInfo.textContent='Выберите дату начала'; return; }
-    const sd=new Date(start); const ed=new Date(sd.getTime()+(days-1)*86400000); rangeInfo.textContent=`До: ${ed.toISOString().slice(0,10)} (всего ${days} дн.)`;
+  function updateFioRulesPreview(ids){
+    if(!fioRulesPreview) return;
+    if (!ids.length) { fioRulesPreview.textContent='(ничего не выбрано)'; return; }
+    fioRulesPreview.textContent = buildLines(ids).join('\n');
   }
-  rangeStart.addEventListener('change',updateRangeInfo); rangeDays.addEventListener('input',updateRangeInfo);
-  ruleType.addEventListener('change',()=>{
-    [weekdayWrapper,dateWrapper,relativeWrapper,rangeWrapper].forEach(d=>d.classList.add('d-none'));
-    if(ruleType.value==='weekday') weekdayWrapper.classList.remove('d-none');
-    if(ruleType.value==='date') dateWrapper.classList.remove('d-none');
-    if(ruleType.value==='relative') relativeWrapper.classList.remove('d-none');
-    if(ruleType.value==='range'){ rangeWrapper.classList.remove('d-none'); updateRangeInfo(); }
-  });
-  presetRange.addEventListener('change',()=>{ if(!presetRange.value) return; const [f,t]=presetRange.value.split('-'); timeFrom.value=f; timeTo.value=t; });
-  document.querySelectorAll('button.quick').forEach(b=>b.addEventListener('click',()=>{ const [f,t]=b.dataset.range.split('-'); timeFrom.value=f; timeTo.value=t; }));
-  addRuleBtn.addEventListener('click',()=>{
-    const from=timeFrom.value, to=timeTo.value; if(!from||!to||from>=to){ alert('Проверьте время'); return; }
-    if(ruleType.value==='range'){
-      if(!rangeStart.value){ alert('Укажите начало диапазона'); return; }
-      const days=parseInt(rangeDays.value,10); const sd=new Date(rangeStart.value);
-      for(let i=0;i<days;i++){ const d=new Date(sd.getTime()+i*86400000).toISOString().slice(0,10); rules.push(`${d} ${from}-${to}`); }
-      sync(); render(); return;
+  function renderResources() {
+    const spec = specialitySelect.value;
+    const filter = addressFilter.value.trim().toLowerCase();
+    resourcesBody.innerHTML = '';
+    if (!ALL_DOCTORS.length) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="4" class="text-muted small">Нет сохранённых ресурсов</td>';
+      resourcesBody.appendChild(tr);
+      resourcesSummary.textContent = '0/0 выбрано';
+      return;
     }
-    let prefix=''; if(ruleType.value==='weekday') prefix=weekday.value; else if(ruleType.value==='date') prefix=dateValue.value; else if(ruleType.value==='relative') prefix=relativeValue.value; if(!prefix){ alert('Проверьте поля'); return; }
-    rules.push(`${prefix} ${from}-${to}`); sync(); render();
+    const fragment = document.createDocumentFragment();
+    const filtered = ALL_DOCTORS.filter(d => {
+      if (spec && d.spec_code !== spec) return false;
+      if (filter) {
+        // Ищем по полноу адресу и короткому названию ЛПУ (short_name), объединяя их
+        const fullPart = (d.full_address || '').toLowerCase();
+        const shortPart = (d.address || '').toLowerCase();
+        const haystack = (fullPart + ' ' + shortPart).trim();
+        if (!haystack.includes(filter)) return false;
+      }
+      return true;
+    });
+    filtered.forEach(d => {
+      const tr = document.createElement('tr');
+      const displayAddr = d.address || '';
+      const fullAddr = d.full_address || displayAddr;
+      const addrLine = displayAddr ? `<div class=\"text-muted small\" title=\"${fullAddr}\">${displayAddr}</div>` : '';
+      tr.innerHTML = `
+        <td><input type=\"checkbox\" class=\"form-check-input resChk\" value=\"${d.id}\" ${SELECTED_IDS.has(d.id)?'checked':''} /></td>
+        <td style=\"max-width:320px;\"><div>${d.name}</div>${addrLine}</td>`;
+      fragment.appendChild(tr);
+    });
+    if (!filtered.length) {
+      const tr = document.createElement('tr');
+  tr.innerHTML = '<td colspan="2" class="text-muted small">Не найдено по фильтру</td>';
+      fragment.appendChild(tr);
+    }
+    resourcesBody.appendChild(fragment);
+    // После перерисовки пересчитаем (сохранённые чекбоксы восстановились)
+    recomputeSelected();
+  }
+  specialitySelect.addEventListener('change', renderResources);
+  addressFilter.addEventListener('input', renderResources);
+  resourcesBody.addEventListener('change', e => { if (e.target.classList.contains('resChk')) recomputeSelected(); });
+  selectAllVisibleBtn.addEventListener('click', () => { resourcesBody.querySelectorAll('input.resChk').forEach(c=> c.checked=true); recomputeSelected(); });
+  clearAllVisibleBtn.addEventListener('click', () => { resourcesBody.querySelectorAll('input.resChk').forEach(c=> c.checked=false); recomputeSelected(); });
+  toggleRawBtn.addEventListener('click', () => {
+    const st = toggleRawBtn.getAttribute('data-state');
+    if (st==='hidden') { rawContainer.classList.remove('d-none'); toggleRawBtn.textContent='Скрыть сырой список'; toggleRawBtn.setAttribute('data-state','shown'); }
+    else { rawContainer.classList.add('d-none'); toggleRawBtn.textContent='Показать сырой список'; toggleRawBtn.setAttribute('data-state','hidden'); }
   });
-  render();
+  copyFioRulesBtn.addEventListener('click', () => {
+    const txt = fioRulesPreview.textContent.trim();
+    if(!txt || txt==='(ничего не выбрано)') return;
+    navigator.clipboard.writeText(txt).then(()=>{
+      const old = copyFioRulesBtn.textContent; copyFioRulesBtn.textContent='Скопировано'; setTimeout(()=> copyFioRulesBtn.textContent=old,1300);
+    });
+  });
+  rulesTextarea.addEventListener('input', () => {
+    const ids = doctorIdsTextarea.value ? doctorIdsTextarea.value.split(/\n+/).filter(Boolean) : [];
+    updateFioRulesPreview(ids);
+  });
+  // клики по строке ресурса (не только по чекбоксу)
+  resourcesBody.addEventListener('click', (e) => {
+    // Если клик по самому чекбоксу – даём стандартному событию change обработаться
+    if (e.target.classList && e.target.classList.contains('resChk')) return;
+    const tr = e.target.closest('tr');
+    if(!tr || !resourcesBody.contains(tr)) return;
+    const cb = tr.querySelector('input.resChk');
+    if(!cb) return; // служебная строка
+    if(window.getSelection && window.getSelection().toString()) return; // выделение текста
+    cb.checked = !cb.checked;
+    recomputeSelected();
+  });
+  // initial generation
+  updateFioRulesPreview([]);
+  renderResources();
 </script>
+<!-- doctorsData already included above -->
 {% endblock %}

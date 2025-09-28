@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
 from config import TELEGRAM_BOT_TOKEN, require_token
-from database import init_db, get_db_session, save_tokens, get_tokens, save_profile, get_profile, get_equivalent_speciality_codes, UserDoctorLink, log_user_action, DoctorSchedule
+from database import init_db, get_db_session, save_tokens, get_tokens, save_profile, get_profile, get_equivalent_speciality_codes, UserDoctorLink, log_user_action, DoctorSchedule, Specialty, UserProfile, LPUAddress, _extract_short_name
 from emias_api import get_whoami, refresh_emias_token, get_assignments_referrals_info
 from rules_parser import parse_user_tracking_input
 
@@ -291,6 +291,44 @@ async def get_receptions_handler(message: Message) -> None:
             await message.answer("Записей не найдено.")
             return
 
+        # Обновляем LPUAddress для всех уникальных addressPointId из appointments
+        unique_addresses = {}
+        for appt in appointments:
+            ap_id = appt.get("addressPointId")
+            if ap_id:
+                ap_id_str = str(ap_id)
+                if ap_id_str not in unique_addresses:
+                    unique_addresses[ap_id_str] = {
+                        "lpu_id": str(appt.get("lpuId", "")),
+                        "address": appt.get("lpuAddress", ""),
+                        "name_lpu": appt.get("nameLpu", "")
+                    }
+
+        for ap_id, data in unique_addresses.items():
+            addr_obj = session.query(LPUAddress).filter_by(address_point_id=ap_id).first()
+            short_name_val = _extract_short_name(data["name_lpu"])
+            if addr_obj:
+                updated = False
+                if data["address"] and addr_obj.address != data["address"]:
+                    addr_obj.address = data["address"]
+                    updated = True
+                if data["lpu_id"] and addr_obj.lpu_id != data["lpu_id"]:
+                    addr_obj.lpu_id = data["lpu_id"]
+                    updated = True
+                if short_name_val and (not addr_obj.short_name or addr_obj.short_name != short_name_val):
+                    addr_obj.short_name = short_name_val
+                    updated = True
+                if updated:
+                    session.flush()
+            else:
+                addr_obj = LPUAddress(
+                    address_point_id=ap_id,
+                    lpu_id=data["lpu_id"] or None,
+                    address=data["address"],
+                    short_name=short_name_val
+                )
+                session.add(addr_obj)
+
         for appt in appointments:
             appt_text = format_appointment(appt)  # Форматируем текст приёма
             buttons = []  # Список кнопок
@@ -331,7 +369,12 @@ async def get_receptions_handler(message: Message) -> None:
                             "code": str(ldp_type_id),
                             "name": ldp_type_name
                         }] if ldp_type_id else []),
-                        "appointment_id": appt.get("id")
+                        "appointment_id": appt.get("id"),
+                        # Адресная информация для нормализации
+                        "addressPointId": appt.get("addressPointId"),
+                        "lpuId": appt.get("lpuId") or appt.get("lpuID"),
+                        "lpuAddress": appt.get("lpuAddress"),
+                        "nameLpu": appt.get("nameLpu")
                     }
             elif appt_type == "RECEPTION" and doctor_api_id:
                 to_doctor = appt.get("toDoctor", {})
@@ -342,7 +385,12 @@ async def get_receptions_handler(message: Message) -> None:
                     "arSpecialityName": to_doctor.get("specialityName"),
                     "complexResource": [],
                     "ldpType": [],
-                    "appointment_id": appt.get("id")
+                    "appointment_id": appt.get("id"),
+                    # Адресная информация для нормализации
+                    "addressPointId": appt.get("addressPointId"),
+                    "lpuId": appt.get("lpuId") or appt.get("lpuID"),
+                    "lpuAddress": appt.get("lpuAddress"),
+                    "nameLpu": appt.get("nameLpu")
                 }
 
             # Если сформированы данные врача, сохраняем/обновляем их в БД
@@ -392,10 +440,47 @@ async def process_reschedule(callback_query: CallbackQuery):
         session = get_db_session()
         # Доступные ресурсы
         for block in doctors_info:
+            block_lpu_id = block.get("lpuId") or block.get("lpuID")
+            block_address = block.get("defaultAddress") or block.get("lpuAddress")
+            block_lpu_short = block.get("lpuShortName") or block.get("lpu_short_name")
             for resource in block.get("availableResources", []):
+                # Обогащаем ресурс LPU данными, если их нет на верхнем уровне ресурса
+                if block_lpu_id and not resource.get("lpuId"):
+                    resource["lpuId"] = block_lpu_id
+                if block_address and not (resource.get("lpuAddress") or resource.get("defaultAddress")):
+                    resource["lpuAddress"] = block_address
+                if block_lpu_short and not resource.get("lpuShortName"):
+                    resource["lpuShortName"] = block_lpu_short
+                # Add addressPointId and other data from room if available
+                complex_resources = resource.get("complexResource", [])
+                if complex_resources and isinstance(complex_resources, list):
+                    room = complex_resources[0].get("room")
+                    if room:
+                        if room.get("addressPointId") and not resource.get("addressPointId"):
+                            resource["addressPointId"] = room.get("addressPointId")
+                        if room.get("lpuId") and not resource.get("lpuId"):
+                            resource["lpuId"] = room.get("lpuId")
+                        if room.get("lpuShortName") and not resource.get("lpuShortName"):
+                            resource["lpuShortName"] = room.get("lpuShortName")
+                        if room.get("defaultAddress") and not resource.get("lpuAddress"):
+                            resource["lpuAddress"] = room.get("defaultAddress")
+                # save_or_update_doctor сам достанет room.defaultAddress / addressPointId из complexResource
                 save_or_update_doctor(session, callback_query.from_user.id, resource)
         # Недоступные врачи
         for doc in not_available_doctors:
+            # Обогатить данными из room, если есть
+            complex_resources = doc.get("complexResource", [])
+            if complex_resources and isinstance(complex_resources, list):
+                room = complex_resources[0].get("room")
+                if room:
+                    if room.get("addressPointId") and not doc.get("addressPointId"):
+                        doc["addressPointId"] = room.get("addressPointId")
+                    if room.get("lpuId") and not doc.get("lpuId"):
+                        doc["lpuId"] = room.get("lpuId")
+                    if room.get("lpuShortName") and not doc.get("lpuShortName"):
+                        doc["lpuShortName"] = room.get("lpuShortName")
+                    if room.get("defaultAddress") and not doc.get("lpuAddress"):
+                        doc["lpuAddress"] = room.get("defaultAddress")
             save_or_update_doctor(session, callback_query.from_user.id, doc)
         session.commit()
 
@@ -870,53 +955,6 @@ async def ldp_aggregate_handler(message: Message) -> None:
 # Обработчик команды /get_specialities – получение информации о специальностях
 # (Повторные импорты, появившиеся после серии правок, удалены для ясности.)
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-
-async def get_specialities_handler(message: Message) -> None:
-    """
-    Обработчик команды /get_specialities.
-    Выводит список специальностей в формате Markdown для удобного копирования команд.
-    """
-    session = get_db_session()
-    tokens = get_tokens(session, message.from_user.id)
-    profile = get_profile(session, message.from_user.id)
-    session.close()
-
-    if not tokens:
-        await message.answer("Токены не найдены. Авторизуйтесь через /auth.")
-        return
-    if not profile:
-        await message.answer("Профиль не найден. Создайте профиль командой /create_profile.")
-        return
-
-    # Получаем данные о специальностях
-    data = get_specialities_info(message.from_user.id)
-
-    if data:
-        lines = ["*Специальности:*"]
-        for group in data:
-            if isinstance(group, dict):
-                group_title = group.get("title", "Без названия")
-                lines.append(f"• *{group_title}*")  # Жирный заголовок группы
-                specialities = group.get("specialities", [])
-
-                if isinstance(specialities, list):
-                    for spec in specialities:
-                        if isinstance(spec, dict):
-                            spec_code = spec.get("specialityCode", "Нет кода")
-                            spec_name = spec.get("specialityName", "")
-                            if spec_name != "":
-                                lines.append(f"     {spec_name}")
-                                lines.append(f"     `/get_clinics {spec_code}`")
-                            else:
-                                lines.append(f"     `/get_doctors_info {spec_code}`")
-
-        answer_text = "\n".join(lines)
-        await message.answer(answer_text, parse_mode="Markdown")
-    else:
-        await message.answer("Ошибка при выполнении запроса к API getSpecialitiesInfo.")
-    async def get_specialities_handler(message: Message) -> None:
-        await message.answer("Команда /get_specialities отключена.")
 
 
 from datetime import datetime
@@ -2090,7 +2128,6 @@ async def help_handler(message: Message) -> None:
         "/whoami — запрос к API whoAmI\n\n"
         "/get_receptions — данные о приёмах\n"
         "/get_referrals — данные о направлениях\n"
-        "/get_specialities — информация о специальностях\n"
         "/favourites — расписание любимых врачей\n"
         "/tracked — список отслеживаемых врачей\n"
         "/set_password <пароль> — установить пароль для веб-доступа\n"
@@ -2112,7 +2149,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(get_profile_info_handler, Command("get_profile_info"))
     dp.message.register(get_receptions_handler, Command("get_receptions"))
     dp.message.register(get_referrals_handler, Command("get_referrals"))
-    dp.message.register(get_specialities_handler, Command("get_specialities"))
+
     dp.message.register(get_doctors_info_handler, Command("get_doctors_info"))
     dp.message.register(get_clinics_handler, Command("get_clinics"))
     dp.message.register(ldp_aggregate_handler, Command("ldp_agg"))
@@ -2476,6 +2513,61 @@ async def check_schedule_updates():
                     note_lines.append(f"📅 {human_date}")
                     note_lines.append(f"🕒 {human_time}")
                     note_lines.append("Автозапись отключена.")
+                    # Если трек принадлежит batch со стратегией stop_after_first – отключаем авто-запись у остальных
+                    siblings_disabled = []
+                    try:
+                        if getattr(track, 'stop_after_first', False) and getattr(track, 'bulk_batch_id', None):
+                            consumed_batch = track.bulk_batch_id
+                            sibling_q = session.query(UserTrackedDoctor).filter(
+                                UserTrackedDoctor.telegram_user_id == user_id,
+                                UserTrackedDoctor.bulk_batch_id == consumed_batch,
+                                UserTrackedDoctor.id != track.id,
+                                UserTrackedDoctor.auto_booking == True
+                            ).all()
+                            for sib in sibling_q:
+                                if sib.auto_booking:
+                                    sib.auto_booking = False
+                                # Группа считается израсходованной – очищаем batch и стоп-флаг
+                                sib.bulk_batch_id = None
+                                sib.stop_after_first = False
+                                siblings_disabled.append(sib.doctor_api_id)
+                                try:
+                                    log_user_action(session, user_id, 'auto_booking_group_disabled', f"doctor={sib.doctor_api_id} batch={consumed_batch}", source='bot', status='info')
+                                except Exception:
+                                    pass
+                            # Текущий трек тоже отделяем от группы, чтобы повторные переноси/записи не трогали уже отключённых
+                            track.bulk_batch_id = None
+                            track.stop_after_first = False
+                            if siblings_disabled:
+                                try:
+                                    named = []
+                                    if len(siblings_disabled) <= 25:
+                                        docs = session.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(siblings_disabled)).all()
+                                        name_map = {d.doctor_api_id: d.name for d in docs}
+                                        for did in siblings_disabled:
+                                            nm = name_map.get(did, did)
+                                            named.append(nm)
+                                    else:
+                                        named = siblings_disabled[:25]
+                                    if named:
+                                        preview_list = ', '.join(named[:6]) + (' …' if len(named) > 6 else '')
+                                        note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} в группе {consumed_batch[:8]}: {preview_list}")
+                                except Exception:
+                                    note_lines.append(f"Остановлена авто-запись ещё для {len(siblings_disabled)} треков группы {consumed_batch[:8]}.")
+                            else:
+                                # Никого больше не было – просто отметим потребление группы
+                                note_lines.append("Группа завершена (других врачей не осталось).")
+                            # Зафиксируем изменения очистки batch немедленно
+                            try:
+                                session.commit()
+                            except Exception as _c_err:
+                                logging.warning(f"Failed commit after batch consume: {consumed_batch} err={_c_err}")
+                            try:
+                                log_user_action(session, user_id, 'bulk_batch_consumed', f"batch={consumed_batch} winner={doctor.doctor_api_id} disabled={len(siblings_disabled)}", source='bot', status='success')
+                            except Exception:
+                                pass
+                    except Exception as batch_err:
+                        logging.warning(f"Failed stop_after_first batch handling batch={getattr(track,'bulk_batch_id',None)} err={batch_err}")
                     note = "\n".join(note_lines)
                     track.auto_booking = False
                     try:
@@ -3302,15 +3394,16 @@ async def book_appointment(user_id: int, doctor_api_id: str, slot: str) -> tuple
                 spec = session.query(Specialty).filter_by(code=doctor.ar_speciality_id).first()
                 if not spec:
                     # Автоматически создаём Specialty, если отсутствует (например, новый ldpType)
-                    spec = Specialty(code=doctor.ar_speciality_id, name=doctor.ar_speciality_name or doctor.ar_speciality_id)
+                    spec = Specialty(code=doctor.ar_speciality_id, name=doctor.ar_speciality_name or doctor.ar_speciality_id, reception_type_id=1863)
                     session.add(spec)
                     session.commit()
-                if spec and spec.reception_type_id not in (None, ""):
+                if spec and spec.reception_type_id not in (None, "", 0):
                     try:
                         reception_type_id = int(spec.reception_type_id)
                     except Exception:
-                        reception_type_id = 0
+                        reception_type_id = 1863  # default fallback
                 else:
+                    reception_type_id = 1863  # default if missing or 0
                     try:
                         log_user_action(session, user_id, 'api_reception_type_missing_db', f'Доктор {doctor_api_id} spec {doctor.ar_speciality_id}', source='bot', status='info')
                     except Exception:

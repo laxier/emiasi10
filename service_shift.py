@@ -450,7 +450,22 @@ def process_service_shift_tasks(max_tasks: int = 10) -> int:
             try:
                 if action == 'shift' and task.appointment_id:
                     from emias_api import shift_appointment
-                    resp = shift_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), int(task.appointment_id), 0)
+                    # Attempt to resolve reception_type_id from specialties table if possible
+                    from database import get_db_session, DoctorInfo, Specialty
+                    _sess = get_db_session()
+                    rtid = 0
+                    try:
+                        doc = _sess.query(DoctorInfo).filter_by(doctor_api_id=str(ar_id)).first()
+                        if doc and doc.ar_speciality_id:
+                            spec = _sess.query(Specialty).filter_by(code=doc.ar_speciality_id).first()
+                            if spec and spec.reception_type_id not in (None, "", 0):
+                                try:
+                                    rtid = int(spec.reception_type_id)
+                                except Exception:
+                                    rtid = 0
+                    finally:
+                        _sess.close()
+                    resp = shift_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), int(task.appointment_id), rtid)
                     status_code = 'shifted'
                 elif action == 'create':
                     resp = create_appointment(task.telegram_user_id, ar_id, cr_id, st.isoformat(), en.isoformat(), 0)

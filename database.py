@@ -1,4 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Boolean, text, Table, JSON, Text, func
+import shutil
+import logging
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import sessionmaker, relationship
@@ -28,11 +30,11 @@ def ensure_migrations():
         except Exception:
             # Column already exists or table missing; ignore
             pass
-        # Add address column to doctor_info if missing
-        try:
-            conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address VARCHAR"))
-        except Exception:
-            pass
+        # (DEPRECATED) address column миграция оставлена закомментированной: теперь используем только нормализованную таблицу LPUAddress
+        # try:
+        #     conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address VARCHAR"))
+        # except Exception:
+        #     pass
         # Add address_point_id column to doctor_info if missing
         try:
             conn.execute(text("ALTER TABLE doctor_info ADD COLUMN address_point_id VARCHAR"))
@@ -40,6 +42,10 @@ def ensure_migrations():
             pass
 
 ensure_migrations()
+
+# Удаление колонки address было выполнено ранее вручную. Авто-миграция drop_doctor_address_column
+# отключена по запросу пользователя, чтобы не трогать таблицу на каждом запуске.
+# Если понадобится пересоздать таблицу без address повторно — сохранён пример процедуры в git истории.
 
 class UserToken(Base):
     __tablename__ = 'user_tokens'
@@ -96,11 +102,11 @@ class DoctorInfo(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     doctor_api_id = Column(String, nullable=False, unique=True)  # API-идентификатор врача
     name = Column(String, nullable=False)
-    complex_resource_id = Column(String, nullable=True)           # ID complexResource, берем первый элемент
-    ar_speciality_id = Column(String, nullable=True)                # arSpecialityId (например, "2028")
-    ar_speciality_name = Column(String, nullable=True)              # arSpecialityName (например, "Заболевание кожи...")
-    address = Column(String, nullable=True)                        # Адрес (room.defaultAddress или lpuAddress)
-    address_point_id = Column(String, nullable=True, index=True)   # Идентификатор точки адреса (addressPointId)
+    complex_resource_id = Column(String, nullable=True)           # ID complexResource, берём первый элемент
+    ar_speciality_id = Column(String, nullable=True)              # arSpecialityId (например, "2028")
+    ar_speciality_name = Column(String, nullable=True)            # arSpecialityName (человеческое имя специальности)
+    # NOTE: address колонка удалена из модели (нормализация через LPUAddress по address_point_id)
+    address_point_id = Column(String, nullable=True, index=True)  # Идентификатор точки адреса (addressPointId)
 
 class LPUAddress(Base):
     __tablename__ = 'lpu_addresses'
@@ -158,6 +164,9 @@ class UserTrackedDoctor(Base):
     auto_booking = Column(Boolean, default=False)
     active = Column(Boolean, default=True)
     tracking_rules = Column(JSON, nullable=True)  # Массив правил
+    # Новые поля для группового массового добавления с политикой "остановиться после первого успеха"
+    bulk_batch_id = Column(String, nullable=True, index=True)  # идентификатор группы (UUID hex)
+    stop_after_first = Column(Boolean, default=False)          # если True и произошёл успешный авто-приём/перенос для любого из группы – остальные авто_booking отключаем
 
     # Уникальность: один пользователь может отслеживать врача только один раз
     __table_args__ = (
@@ -290,6 +299,94 @@ def init_db():
 def get_db_session():
     return SessionLocal()
 
+# ----------------------------- SCHEMA UPGRADE HELPERS -----------------------------
+
+def _backup_db_once():
+    """Create a timestamped backup of the SQLite file (idempotent per run)."""
+    try:
+        if not getattr(_backup_db_once, '_done', False) and DB_PATH.exists():
+            ts = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+            dst = DB_PATH.with_suffix(f'.bak_{ts}')
+            shutil.copy2(DB_PATH, dst)
+            logging.info(f"[MIGRATION] Backup created: {dst.name}")
+            _backup_db_once._done = True
+    except Exception as e:
+        logging.warning(f"[MIGRATION] Backup failed: {e}")
+
+def _table_has_column(conn, table: str, column: str) -> bool:
+    try:
+        res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        return any(r[1] == column for r in res)
+    except Exception:
+        return False
+
+def _ensure_column(conn, table: str, column_def: str):
+    """Add a column if missing (simple ADD COLUMN). column_def like 'bulk_batch_id VARCHAR'"""
+    col_name = column_def.split()[0]
+    if not _table_has_column(conn, table, col_name):
+        try:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column_def}"))
+            logging.info(f"[MIGRATION] Added column {col_name} to {table}")
+        except Exception as e:
+            logging.warning(f"[MIGRATION] Failed to add column {col_name} to {table}: {e}")
+
+def _recreate_without_app_id(conn, table: str):
+    """If table contains obsolete 'app_id' column, recreate without it using current SQLAlchemy metadata."""
+    try:
+        info = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    except Exception:
+        return
+    if not any(col[1] == 'app_id' for col in info):
+        return  # nothing to do
+    tbl_meta = Base.metadata.tables.get(table)
+    if tbl_meta is None:
+        logging.warning(f"[MIGRATION] Metadata for table {table} not found; skip app_id drop")
+        return
+    logging.info(f"[MIGRATION] Recreating {table} to drop obsolete app_id column")
+    # Backup before destructive change
+    _backup_db_once()
+    tmp_table = f"{table}_old_appid"
+    try:
+        conn.execute(text(f"ALTER TABLE {table} RENAME TO {tmp_table}"))
+        # Create new table (without app_id) using metadata
+        tbl_meta.create(conn)
+        # Determine intersection columns
+        old_cols = [c[1] for c in info if c[1] != 'app_id']
+        new_cols = [c.name for c in tbl_meta.columns]
+        copy_cols = [c for c in old_cols if c in new_cols]
+        cols_csv = ",".join(copy_cols)
+        conn.execute(text(f"INSERT INTO {table} ({cols_csv}) SELECT {cols_csv} FROM {tmp_table}"))
+        conn.execute(text(f"DROP TABLE {tmp_table}"))
+        logging.info(f"[MIGRATION] Recreated {table} without app_id (migrated {len(copy_cols)} columns)")
+    except Exception as e:
+        logging.error(f"[MIGRATION] Failed to recreate {table}: {e}")
+        # Attempt rollback path: if new table missing, rename back
+        try:
+            existing = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"), {"n": table}).fetchone()
+            if not existing:
+                conn.execute(text(f"ALTER TABLE {tmp_table} RENAME TO {table}"))
+        except Exception:
+            pass
+
+def run_schema_upgrades():
+    """Apply idempotent schema upgrades: drop obsolete app_id columns; add new tracking batch columns."""
+    with engine.begin() as conn:
+        # 1. Recreate tables missing from metadata first (metadata create_all is already invoked elsewhere if needed)
+        # 2. Drop obsolete app_id via recreate for listed tables
+        for tbl in ['user_tracked_doctors', 'user_favorite_doctors', 'user_doctor_link', 'specialties', 'doctor_info']:
+            _recreate_without_app_id(conn, tbl)
+        # 3. Ensure new columns present (if table existed before model change)
+        _ensure_column(conn, 'user_tracked_doctors', 'bulk_batch_id VARCHAR')
+        _ensure_column(conn, 'user_tracked_doctors', 'stop_after_first BOOLEAN')
+
+def _late_schema_upgrade():
+    try:
+        run_schema_upgrades()
+    except Exception as _mig_err:
+        logging.warning(f"[MIGRATION] run_schema_upgrades failed: {_mig_err}")
+
+_late_schema_upgrade()
+
 def save_tokens(session, telegram_user_id: int, access_token: str, refresh_token: str, expires_in: int):
     from datetime import datetime, timezone, timedelta
     now_utc = datetime.now(timezone.utc)
@@ -368,6 +465,16 @@ def get_equivalent_speciality_codes(code):
         return set(DERMATOLOGY_EQUIV)
     return SPECIALITY_ALIASES.get(code_str, {code_str})
 
+def _extract_short_name(name_lpu: str) -> str:
+    """Извлекает короткое название LPU из полного названия.
+    
+    Если в названии есть скобки, возвращает содержимое скобок.
+    Иначе возвращает полное название.
+    """
+    if not name_lpu:
+        return None
+    return name_lpu
+
 def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
     """
     Сохраняет или обновляет запись о враче в базе данных, а также связь с пользователем.
@@ -424,6 +531,7 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
     address_val = None
     address_point_id_val = None
     lpu_id_val = doctor_data.get("lpuId") or doctor_data.get("lpuID")
+    lpu_short_name_val = doctor_data.get("lpuShortName") or doctor_data.get("lpu_short_name") or _extract_short_name(doctor_data.get("nameLpu"))
     if doctor_data.get("addressPointId"):
         address_point_id_val = str(doctor_data.get("addressPointId"))
     # Прямые ключи
@@ -442,6 +550,8 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
                         address_point_id_val = str(room.get("addressPointId"))
                     if room.get("lpuId") and not lpu_id_val:
                         lpu_id_val = str(room.get("lpuId"))
+                    if room.get("lpuShortName") and not lpu_short_name_val:
+                        lpu_short_name_val = room.get("lpuShortName")
                     break
         except Exception:
             pass
@@ -456,13 +566,20 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
                     addr_obj.address = address_val; updated = True
                 if lpu_id_val and addr_obj.lpu_id != str(lpu_id_val):
                     addr_obj.lpu_id = str(lpu_id_val); updated = True
+                if lpu_short_name_val and addr_obj.short_name != lpu_short_name_val:
+                    addr_obj.short_name = lpu_short_name_val; updated = True
                 if updated:
                     try:
                         session.flush()
                     except Exception:
                         pass
             else:
-                addr_obj = LPUAddress(address_point_id=address_point_id_val, lpu_id=str(lpu_id_val) if lpu_id_val else None, address=address_val)
+                addr_obj = LPUAddress(
+                    address_point_id=address_point_id_val,
+                    lpu_id=str(lpu_id_val) if lpu_id_val else None,
+                    address=address_val,
+                    short_name=lpu_short_name_val
+                )
                 session.add(addr_obj)
         except Exception:
             pass
@@ -508,8 +625,7 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             doctor.complex_resource_id = complex_resource_id
         doctor.ar_speciality_id = ar_speciality_id
         doctor.ar_speciality_name = ar_speciality_name
-        if address_val and (not doctor.address or doctor.address != address_val):
-            doctor.address = address_val
+    # address удалён из модели – адресы берём из LPUAddress
         if address_point_id_val and (not doctor.address_point_id or doctor.address_point_id != address_point_id_val):
             doctor.address_point_id = address_point_id_val
         # print(f"Updated doctor {doctor_api_id}")
@@ -521,7 +637,6 @@ def save_or_update_doctor(session, telegram_user_id: int, doctor_data: dict):
             complex_resource_id=complex_resource_id,
             ar_speciality_id=ar_speciality_id,
             ar_speciality_name=ar_speciality_name,
-            address=address_val,
             address_point_id=address_point_id_val
         )
         session.add(doctor)

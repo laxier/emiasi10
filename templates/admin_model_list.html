@@ -57,17 +57,21 @@
             <td class="small">
               <div class="row row-cols-1 g-1">
               {% for name,val in obj.__dict__.items() if name not in ['._sa_instance_state','_sa_instance_state','id'] + cfg.editable %}
-                <div><span class="text-secondary">{{ name }}:</span>
-                  {% if model_key == 'schedule' and name == 'schedule_text' and val %}
-                    {% set txt = val %}
-                    {% set shown = txt[:180] %}
-                    <code title="{{ txt|length }} chars total">{{ shown }}{% if txt|length > 180 %}… ({{ txt|length }}){% endif %}</code>
-                  {% elif val is mapping or val is sequence and not val is string %}
-                    <code>{{ val }}</code>
-                  {% else %}
-                    {{ val }}
-                  {% endif %}
-                </div>
+                {% if model_key == 'doctor' and name == 'resolved_short_address' %}
+                  <div><span class="text-secondary">short_addr:</span> {{ val }}</div>
+                {% elif not (model_key == 'doctor' and name == 'resolved_short_address') %}
+                  <div><span class="text-secondary">{{ name }}:</span>
+                    {% if model_key == 'schedule' and name == 'schedule_text' and val %}
+                      {% set txt = val %}
+                      {% set shown = txt[:180] %}
+                      <code title="{{ txt|length }} chars total">{{ shown }}{% if txt|length > 180 %}… ({{ txt|length }}){% endif %}</code>
+                    {% elif val is mapping or val is sequence and not val is string %}
+                      <code>{{ val }}</code>
+                    {% else %}
+                      {{ val }}
+                    {% endif %}
+                  </div>
+                {% endif %}
               {% endfor %}
               </div>
             </td>
