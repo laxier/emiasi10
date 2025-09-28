@@ -25,7 +25,7 @@ from emias_api import (
 import json, datetime as dt
 from datetime import timezone, timedelta
 import os
-from sqlalchemy import text
+from sqlalchemy import text, or_
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key')
@@ -520,15 +520,64 @@ def admin_model_list(model_key):
     if not cfg:
         return redirect(url_for('admin_dashboard'))
     session_db = get_db_session()
-    query = session_db.query(cfg['model'])
+    Model = cfg['model']
+    query = session_db.query(Model)
+
+    # Поиск (до 500 записей) — параметр q
+    q = (request.args.get('q') or '').strip()
+    if q:
+        like = f"%{q}%"
+        # Специальная логика для расписаний врачей (schedule): хотим искать по имени врача, специальности и doctor_api_id
+        if model_key == 'schedule':
+            try:
+                query = query.join(DoctorInfo, DoctorSchedule.doctor_api_id == DoctorInfo.doctor_api_id)
+                query = query.filter(
+                    or_(
+                        DoctorInfo.name.ilike(like),
+                        DoctorInfo.ar_speciality_name.ilike(like),
+                        DoctorSchedule.doctor_api_id.ilike(like)
+                    )
+                )
+            except Exception:
+                # Fallback: простейший фильтр по doctor_api_id
+                try:
+                    query = query.filter(DoctorSchedule.doctor_api_id.ilike(like))
+                except Exception:
+                    pass
+        else:
+            # Универсальный упрощённый поиск: пытаемся угадать популярные поля
+            filters = []
+            for attr_name in ('name','doctor_api_id','code','ar_speciality_name','action','details'):
+                if hasattr(Model, attr_name):
+                    try:
+                        filters.append(getattr(Model, attr_name).ilike(like))
+                    except Exception:
+                        pass
+            if filters:
+                try:
+                    query = query.filter(or_(*filters))
+                except Exception:
+                    pass
+            else:
+                # Если вообще ничего не нашли — игнорируем q
+                pass
+
+    # Сортировка если указана
     if cfg.get('order_by'):
         try:
-            query = query.order_by(getattr(cfg['model'], cfg['order_by']))
+            query = query.order_by(getattr(Model, cfg['order_by']))
         except Exception:
             pass
+
+    # Считаем количество найденных (до лимита) — отдельный запрос
+    try:
+        total_found = query.count()
+    except Exception:
+        total_found = None
+
     items = query.limit(500).all()
     session_db.close()
-    return render_template('admin_model_list.html', cfg=cfg, model_key=model_key, items=items)
+    return render_template('admin_model_list.html', cfg=cfg, model_key=model_key, items=items, q=q, total_found=total_found)
 
 @app.route('/admin/model/<model_key>/create', methods=['GET','POST'])
 def admin_model_create(model_key):

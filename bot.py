@@ -636,14 +636,29 @@ async def do_reschedule_callback(callback_query: CallbackQuery):
                 except Exception:
                     date_str = start_time[:10] if start_time else "Неизвестно"
                     time_str = f"{start_time[11:16] if start_time else '??:??'} - {end_time[11:16] if end_time else '??:??'}"
-                msg = (
-                    f"✅ Приём перенесён!\n"
-                    f"👨‍⚕️ {doctor_name}\n"
-                    f"📅 {date_str}\n"
-                    f"🕒 {time_str}"
-                )
+                # Формат единого стиля (ручной перенос):
+                # ✅ Приём перенесён!
+                # 👨‍⚕️ Имя врача
+                # 🩺 Специальность (если есть)
+                # 📅 1 октября 2025
+                # 🕒 12:12
+                speciality_name = avail_res.get("arSpecialityName") or avail_res.get("arSpeciality") or ""
+                # Для единобразия берём только время начала
+                try:
+                    start_only = datetime.fromisoformat(start_time).strftime('%H:%M') if start_time else time_str.split('-')[0]
+                except Exception:
+                    start_only = time_str.split('-')[0]
+                lines = [
+                    "✅ Приём перенесён!",
+                    f"👨‍⚕️ {doctor_name}",
+                ]
+                if speciality_name:
+                    lines.append(f"🩺 {speciality_name}")
+                lines.append(f"📅 {date_str}")
+                lines.append(f"🕒 {start_only}")
+                msg = "\n".join(lines)
                 await callback_query.message.answer(msg)
-                await callback_query.answer("Приём перенесён успешно!", show_alert=True)
+                await callback_query.answer("Перенос выполнен", show_alert=True)
                 try:
                     # Добавляем детализацию: resource/complex/appointment/новый appointmentId (если вернулся)
                     extra = f'docName="{doctor_name}" res={resource_id} cRes={c_id} apptOld={appt_id} apptNew={appointment_new_id or "?"} {start_time}->{end_time}'
@@ -2498,18 +2513,40 @@ async def check_schedule_updates():
                 logging.info(f"Auto-book RESULT {doctor.name}: slot={best_slot_display} success={success} kind={result_kind}")
                 # Уведим пользователя и при успехе выключим автозапись (одноразовая логика)
                 if success:
+                    # Единый формат (авто):
+                    # ✅ Автозапись  / ✅ Автоперенос
+                    # 👨‍⚕️ Имя врача
+                    # 🩺 Специальность
+                    # 📅 1 октября 2025
+                    # 🕒 11:12
+                    # Автозапись отключена.
                     if result_kind == "shift":
                         action = 'auto_book_shift'
-                        note_body = "Приём перенесён"
+                        header = "✅ Автоперенос"
                     else:
                         action = 'auto_book_success'
-                        note_body = "Запись создана"
-                    note = (
-                        f"✅ <b>{note_body}</b>\n"
-                        f"👨‍⚕️ {doctor.name} ({doctor.ar_speciality_name})\n"
-                        f"Слот: {best_slot_display}\n"
-                        f"Автозапись отключена."
-                    )
+                        header = "✅ Автозапись"
+
+                    # Парсим слот для даты/времени
+                    human_date = best_slot_display
+                    human_time = best_slot_display[-5:]
+                    try:
+                        from datetime import datetime as _dt
+                        _months = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
+                        dt_parsed = _dt.strptime(best_slot_display, "%Y-%m-%d %H:%M")
+                        human_date = f"{dt_parsed.day} {_months.get(dt_parsed.month, dt_parsed.strftime('%B'))} {dt_parsed.year}"
+                        human_time = dt_parsed.strftime('%H:%M')
+                    except Exception:
+                        pass
+
+                    spec_line = doctor.ar_speciality_name or ''
+                    note_lines = [header, f"👨‍⚕️ {doctor.name}"]
+                    if spec_line:
+                        note_lines.append(f"🩺 {spec_line}")
+                    note_lines.append(f"📅 {human_date}")
+                    note_lines.append(f"🕒 {human_time}")
+                    note_lines.append("Автозапись отключена.")
+                    note = "\n".join(note_lines)
                     track.auto_booking = False
                     try:
                         log_user_action(session, user_id, action, f"doctor={doctor.doctor_api_id} slot={best_slot_display}", source='bot', status='success')
@@ -2518,7 +2555,7 @@ async def check_schedule_updates():
                 else:
                     action = 'auto_book_fail'
                     note = (
-                        f"⚠️ <b>Автозапись не удалась</b>\n"
+                        f"⚠️ Автозапись не удалась\n"
                         f"👨‍⚕️ {doctor.name} ({doctor.ar_speciality_name})\n"
                         f"Слот: {best_slot_display}\n"
                         f"Ошибка: {safe_html(result_kind) if result_kind else 'Неизвестная ошибка'}"

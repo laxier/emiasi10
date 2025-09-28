@@ -4,14 +4,28 @@
 <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-3">
   <div>
     <h1 class="h4 mb-0">{{ cfg.title }}</h1>
-    <small class="text-muted">До 500 записей</small>
+    <small class="text-muted">
+      До 500 записей{% if total_found is not none %} · Найдено: {{ total_found }}{% endif %}
+    </small>
   </div>
-  <div class="d-flex gap-2">
-  <a class="btn btn-outline-secondary" href="{{ url_for('admin_dashboard') }}"><i class="fa fa-arrow-left"></i> Назад</a>
-        {% if cfg.create and cfg.editable|length > 0 %}
-          <a class="btn btn-primary" href="{{ url_for('admin_model_create', model_key=model_key) }}"><i class="fa fa-plus"></i> Создать</a>
-        {% endif %}
-  </div>
+  <form method="get" class="d-flex align-items-center gap-2">
+    <div class="input-group input-group-sm" style="width:240px;">
+      <input type="text" class="form-control" name="q" placeholder="Поиск..." value="{{ q or '' }}" />
+      {% if q %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('admin_model_list', model_key=model_key) }}" title="Сброс">
+          <i class="fa fa-times"></i>
+        </a>
+      {% else %}
+        <button class="btn btn-outline-secondary" type="submit"><i class="fa fa-search"></i></button>
+      {% endif %}
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('admin_dashboard') }}"><i class="fa fa-arrow-left"></i> Назад</a>
+      {% if cfg.create and cfg.editable|length > 0 %}
+        <a class="btn btn-primary btn-sm" href="{{ url_for('admin_model_create', model_key=model_key) }}"><i class="fa fa-plus"></i> Создать</a>
+      {% endif %}
+    </div>
+  </form>
 </div>
 
 <div class="card shadow-sm mb-4">
