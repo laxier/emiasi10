@@ -1,0 +1,8 @@
+# Example configuration for emiasik
+# Copy this file to `config.py` and fill in the real values.
+
+# Telegram bot token (get from BotFather)
+TELEGRAM_BOT_TOKEN = "your-telegram-bot-token-here"
+
+# Base URL for the EMIAS API
+EMIAS_API_BASE_URL = "https://emias.info/api-eip/"

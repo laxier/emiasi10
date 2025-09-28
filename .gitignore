@@ -52,3 +52,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Local config containing secrets (do not commit)
+config.py
