@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  emias-bot:
+    build: .
+    ports:
+      - "80:80"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SECRET_KEY=${SECRET_KEY:-default_secret_key_change_me}
+      - DATABASE_URL=sqlite:////data/emias_bot.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
