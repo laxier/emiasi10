@@ -109,6 +109,13 @@ def user_dashboard():
     all_ids = set(tracked_ids + favorite_ids)
     doctors = session_db.query(DoctorInfo).filter(DoctorInfo.doctor_api_id.in_(all_ids)).all()
     doctor_dict = {d.doctor_api_id: d for d in doctors}
+    # Prefetch LPU short names for these doctors (address_point_id -> short_name)
+    from database import LPUAddress
+    ap_ids = {d.address_point_id for d in doctors if d.address_point_id}
+    lpu_map = {}
+    if ap_ids:
+        addr_rows = session_db.query(LPUAddress).filter(LPUAddress.address_point_id.in_(ap_ids)).all()
+        lpu_map = {a.address_point_id: a.short_name or a.address for a in addr_rows}
     
     # Логи токенов: ищем последний success и последний error для api_refresh_token
     last_refresh_log = session_db.query(UserLog).filter_by(telegram_user_id=user_id, action='api_refresh_token').order_by(UserLog.timestamp.desc()).first()
@@ -186,7 +193,7 @@ def user_dashboard():
                     show_refresh_attempt = True
     except Exception:
         pass
-    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update, token_error=token_error, token_error_details=token_error_details, last_refresh_attempt=last_refresh_attempt, show_refresh_attempt=show_refresh_attempt)
+    return render_template('user_dashboard.html', profile=profile, tokens=tokens, tracked=tracked, favorites=favorites, doctor_dict=doctor_dict, lpu_map=lpu_map, token_status=token_status, remaining_seconds=remaining_seconds, last_token_update=last_token_update, token_error=token_error, token_error_details=token_error_details, last_refresh_attempt=last_refresh_attempt, show_refresh_attempt=show_refresh_attempt)
 
 @app.route('/user/refresh_token', methods=['POST'])
 def manual_refresh_token():

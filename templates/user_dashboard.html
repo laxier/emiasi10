@@ -120,7 +120,12 @@
                                     {% set doctor = doctor_dict.get(t.doctor_api_id) %}
                                     <tr>
                                         <td>{{ t.doctor_api_id }}</td>
-                                        <td>{{ doctor.name if doctor else 'Неизвестен' }}</td>
+                                        <td>
+                                            {{ doctor.name if doctor else 'Неизвестен' }}
+                                            {% if doctor and doctor.address_point_id and lpu_map and lpu_map.get(doctor.address_point_id) %}
+                                                <div class="text-muted small">{{ lpu_map.get(doctor.address_point_id) }}</div>
+                                            {% endif %}
+                                        </td>
                                         <td>{{ doctor.ar_speciality_name if doctor else 'Неизвестна' }}</td>
                                         <td>
                                             <form method="post" action="{{ url_for('toggle_track', doctor_id=t.doctor_api_id) }}" style="display:inline;">
@@ -190,4 +195,29 @@
                 <a href="{{ url_for('add_favorite') }}" class="btn btn-primary">Добавить врача в избранное</a>
             </div>
         </div>
+{% endblock %}
+{% block extra_scripts %}
+<style>
+    .all-doctors-list { font-size: 0.8rem; font-family: "SFMono-Regular", Menlo, Consolas, monospace; line-height: 1.25; }
+    .all-doctors-list .lpu { color:#555; }
+    .all-doctors-wrapper { margin-top:2rem; border-top:1px solid #ddd; padding-top:1rem; }
+    .all-doctors-list mark { background: #fff3cd; padding:0 .2em; border-radius:2px; }
+</style>
+<div class="all-doctors-wrapper">
+    <h2 class="h6 mb-2">Все врачи (prefetch)</h2>
+    {% if doctor_dict %}
+        <div class="all-doctors-list">
+            {% for did, doc in doctor_dict.items() %}
+                {% set lpu = lpu_map.get(doc.address_point_id) if lpu_map else None %}
+                <div>
+                    <strong>{{ doc.name }}</strong>
+                    {% if lpu %}<span class="lpu"> — {{ lpu }}</span>{% endif %}
+                    <span class="text-muted">[{{ did }}{% if doc.ar_speciality_name %} · {{ doc.ar_speciality_name }}{% endif %}]</span>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="text-muted small">Нет данных о врачах.</p>
+    {% endif %}
+</div>
 {% endblock %}

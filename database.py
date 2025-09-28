@@ -117,25 +117,18 @@ class LPUAddress(Base):
     short_name = Column(String, nullable=True)
 
     def __repr__(self):
-        return f"<LPUAddress(address_point_id={self.address_point_id}, lpu_id={self.lpu_id}, address={self.address})>"
+        return (f"<LPUAddress(address_point_id={self.address_point_id}, lpu_id={self.lpu_id}, "
+                f"short_name={self.short_name}, address={self.address})>")
 
     @hybrid_property
-    def name_lower(self):
-        # Python-level Unicode-aware casefold for comparisons
-        return self.name.casefold() if self.name else None
+    def short_name_lower(self):
+        """Casefold variant of short_name for Python-side comparisons."""
+        return self.short_name.casefold() if self.short_name else None
 
-    @name_lower.expression
-    def name_lower(cls):
-        # SQL expression for case-insensitive matching
-        return func.lower(cls.name)
-
-    def __repr__(self):
-        return (f"<DoctorInfo(doctor_api_id={self.doctor_api_id}, name={self.name}, "
-                f"complex_resource_id={self.complex_resource_id}, "
-                f"ar_speciality_id={self.ar_speciality_id}, "
-                f"ar_speciality_name={self.ar_speciality_name}, "
-                f"ar_inquiry_purpose_code={self.ar_inquiry_purpose_code}, "
-                f"ar_inquiry_purpose_id={self.ar_inquiry_purpose_id})>")
+    @short_name_lower.expression
+    def short_name_lower(cls):  # type: ignore
+        """SQL expression for case-insensitive matching (LOWER)."""
+        return func.lower(cls.short_name)
 
 
 class UserFavoriteDoctor(Base):
@@ -219,7 +212,8 @@ class UserLog(Base):
     status = Column(String, nullable=True)   # 'success' | 'error' | 'info' | 'warning'
 
     def __repr__(self):
-        return f"<UserDoctorLink(telegram_user_id={self.telegram_user_id}, doctor_speciality={self.doctor_speciality}, appointment_id={self.appointment_id})>"
+        return (f"<UserLog(id={self.id}, user={self.telegram_user_id}, action={self.action}, "
+                f"status={self.status}, source={self.source}, ts={self.timestamp})>")
 
 
 def is_tracking_doctor(session, user_id: int, doctor_api_id: str) -> bool:
@@ -292,12 +286,6 @@ def list_tracked_doctors(session, telegram_user_id: int):
     tracked = session.query(UserTrackedDoctor).filter_by(telegram_user_id=telegram_user_id).all()
     return tracked
 
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
-
-def get_db_session():
-    return SessionLocal()
 
 # ----------------------------- SCHEMA UPGRADE HELPERS -----------------------------
 
