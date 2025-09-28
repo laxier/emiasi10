@@ -15,6 +15,7 @@ from database import (
     Specialty,
     UserDoctorLink
 )
+from database import LPUAddress
 from emias_api import (
     get_whoami,
     get_assignments_referrals_info,
@@ -430,6 +431,15 @@ ADMIN_MODELS = {
         'create': False,
         'delete': False,
         'order_by': 'doctor_api_id'
+    },
+    'address': {
+        'model': LPUAddress,
+        'title': 'Адреса (LPUAddress)',
+        # Разрешим редактировать short_name и lpu_id, полный address пока только для просмотра (часто из API)
+        'editable': ['short_name','lpu_id'],
+        'create': False,  # Создание вручную отключено чтобы не плодить «висячие» записи
+        'delete': False,  # Удаление отключено: может сломать привязки doctor.address_point_id
+        'order_by': 'address_point_id'
     },
     'tracked': {
         'model': UserTrackedDoctor,
